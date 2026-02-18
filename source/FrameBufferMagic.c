@@ -451,6 +451,10 @@ void DrawFrameFinish() {
 }
 
 void DrawDatInfo(int disc_type) {
+	if (disc_type == IS_OTHER_DISC || verify_type_in_use < 0) {
+		WriteCentre(440, "Redump verification unavailable for this disc type");
+		return;
+	}
 	if (verify_type_in_use == VERIFY_REDUMP_DAT_GC) {
 			WriteCentre(440, "Gamecube Redump.org DAT in use");
 	}
@@ -629,4 +633,3 @@ int DrawYesNoDialog(char *line1, char *line2) {
 	while ((get_buttons_pressed() & PAD_BUTTON_A));
 	return selection;
 }
-

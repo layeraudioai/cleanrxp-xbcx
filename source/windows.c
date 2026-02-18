@@ -23,41 +23,229 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <gccore.h>
 #include <errno.h>
 #include <math.h>
 #include <unistd.h>
 #include <malloc.h>
 #include <stdarg.h>
-#include <ogc/timesupp.h>
-#include <ogc/machine/processor.h>
-#include "FrameBufferMagic.h"
-#include "IPLFontWrite.h"
 #include "ios.h"
-#include "gc_dvd.h"
-#include "verify.h"
-#include "datel.h"
-#include "main.h"
 #include "crc32.h"
 #include "sha1.h"
 #include "md5.h"
+#ifdef __CYGWIN__
+#include <windows.h>
+#include <winioctl.h>
+#include <stdint.h>
+#include <time.h>
+#include <sys/select.h>
+#include <termios.h>
+#include <unistd.h>
+#include <pthread.h>
+#include <semaphore.h>
+#include <sys/stat.h>
+typedef uint8_t u8;
+typedef uint16_t u16;
+typedef uint32_t u32;
+typedef uint64_t u64;
+typedef int8_t s8;
+typedef int16_t s16;
+typedef int32_t s32;
+typedef int64_t s64;
+typedef float f32;
+typedef volatile u32 vu32;
+typedef u32 sec_t;
+#ifndef FALSE
+#define FALSE 0
+#endif
+#ifndef TRUE
+#define TRUE 1
+#endif
+#define ATTRIBUTE_ALIGN(x)
+
+typedef struct {
+    int x, y, w, h;
+    int viTVMode;
+    int fbWidth;
+    int efbHeight;
+    int xfbHeight;
+} GXRModeObj;
+
+typedef struct {
+    bool (*startup)(void);
+    bool (*isInserted)(void);
+    bool (*readSectors)(sec_t, sec_t, void*);
+    bool (*writeSectors)(sec_t, sec_t, void*);
+    bool (*clearStatus)(void);
+    bool (*shutdown)(void);
+} DISC_INTERFACE;
+
+typedef struct {
+    char* name;
+} ntfs_md;
+
+typedef void* mqbox_t;
+typedef pthread_t lwp_t;
+typedef void* mqmsg_t;
+
+#define MQ_MSG_BLOCK 0
+#define SYS_POWEROFF 0
+#define VI_NON_INTERLACE 0
+#define GX_CULL_NONE 0
+#define GX_TRUE 1
+#define NTFS_DEFAULT 0
+#define NTFS_RECOVER 0
+#define COLOR_BLACK 0
+
+#define PAD_BUTTON_LEFT 0x0001
+#define PAD_BUTTON_RIGHT 0x0002
+#define PAD_BUTTON_DOWN 0x0004
+#define PAD_BUTTON_UP 0x0008
+#define PAD_TRIGGER_Z 0x0010
+#define PAD_TRIGGER_R 0x0020
+#define PAD_TRIGGER_L 0x0040
+#define PAD_BUTTON_A 0x0100
+#define PAD_BUTTON_B 0x0200
+#define PAD_BUTTON_X 0x0400
+#define PAD_BUTTON_Y 0x0800
+#define PAD_BUTTON_START 0x1000
+
+typedef struct {
+    u8 r, g, b, a;
+} GXColor;
+
+#define MEM_K0_TO_K1(x) (x)
+
+enum {
+	TYPE_USB = 0,
+	TYPE_SD,
+	TYPE_READONLY
+};
+static const DISC_INTERFACE* sdcard = NULL;
+static const DISC_INTERFACE* usb = NULL;
+static HANDLE hSourceDrive = INVALID_HANDLE_VALUE;
+
+#else
+#include <gccore.h>
+#include <ogcsys.h>
+#include <ogc/pad.h>
+#include <ogc/lwp_watchdog.h>
+#include <ogc/message.h>
 #include <fat.h>
-#include "m2loader/m2loader.h"
-
-#define DEFAULT_FIFO_SIZE    (256*1024)//(64*1024) minimum
-
+#include <ntfs.h>
+#endif
+#include <time.h>
+#include <stdbool.h>
 #ifdef HW_RVL
+#include <wiiuse/wpad.h>
+#include <ogc/es.h>
+#include <ogc/conf.h>
 #include <ogc/usbstorage.h>
 #include <sdcard/wiisd_io.h>
-#include <wiiuse/wpad.h>
 #endif
 
-#include <ntfs.h>
+u64 gettime();
+u32 diff_msec(u64 start, u64 end);
+u32 diff_sec(u64 start, u64 end);
+
+#define V_MAJOR 2
+#define V_MID 5
+#define V_MINOR 0
+
+#define READ_SIZE (1024*1024)
+#define ONE_GIGABYTE (1024*1024*1024)
+
+#define WII_D1_SIZE 0x118240
+#define WII_D5_SIZE 0x1182400
+#define WII_D9_SIZE 0x1F80A00
+#define NGC_DISC_SIZE 0x1182400
+
+enum {
+	IS_NGC_DISC = 0,
+	IS_WII_DISC,
+	IS_DATEL_DISC,
+	IS_OTHER_DISC,
+	IS_UNK_DISC
+};
+
+enum {
+	NO_DISC = -1,
+	CANCELLED = -2,
+};
+
+enum {
+	TYPE_FAT = 0,
+	TYPE_NTFS
+};
+
+enum {
+	NOT_ASKED = -1,
+	ANSWER_NO = 0,
+	ANSWER_YES = 1
+};
+
+enum {
+	VERIFY_INTERNAL_CRC = 0,
+	VERIFY_INTERNAL_MD5,
+	VERIFY_REDUMP_CRC,
+	VERIFY_REDUMP_MD5
+};
+
+enum {
+	NGC_UNCOMPRESSED = 0,
+	NGC_COMPRESSED,
+	NGC_RESERVED1,
+	NGC_RESERVED2,
+	WII_DUAL_LAYER,
+	WII_CHUNK_SIZE,
+	WII_NEWFILE,
+	AUDIO_OUTPUT,
+	MAX_OPTIONS
+};
+
+#define MAX_NGC_OPTIONS 4
+#define MAX_WII_OPTIONS 4
+
+enum {
+	AUTO_DETECT = 0,
+	SINGLE_MINI,
+	SINGLE_LAYER,
+	DUAL_LAYER,
+	DUAL_DELIM
+};
+
+enum {
+	CHUNK_1GB = 0,
+	CHUNK_2GB,
+	CHUNK_3GB,
+	CHUNK_MAX,
+	CHUNK_DELIM
+};
+
+enum {
+	ASK_USER = 0,
+	AUTO_CHUNK,
+	NEWFILE_DELIM
+};
+
+enum {
+	AUDIO_OUT_BIN = 0,
+	AUDIO_OUT_WAV,
+	AUDIO_OUT_WAV_FAST,
+	AUDIO_OUT_WAV_BEST,
+	AUDIO_OUT_DELIM
+};
+
+#define DEFAULT_FIFO_SIZE    (256*1024)//(64*1024) minimum
 static ntfs_md *mounts = NULL;
 
 #ifdef HW_RVL
-static DISC_INTERFACE* sdcard = &__io_wiisd;
-static DISC_INTERFACE* usb = &__io_usbstorage;
+#ifdef __CYGWIN__
+static const DISC_INTERFACE* sdcard = NULL;
+static const DISC_INTERFACE* usb = NULL;
+#else
+static const DISC_INTERFACE* sdcard = &__io_wiisd;
+static const DISC_INTERFACE* usb = &__io_usbstorage;
+#endif
 enum {
 	TYPE_USB = 0,
 	TYPE_SD,
@@ -93,6 +281,7 @@ static char internalName[512];
 static char mountPath[512];
 static char wpadNeedScan = 0;
 static char padNeedScan = 0;
+char txtbuffer[2048];
 int print_usb = 0;
 int shutdown = 0;
 int whichfb = 0;
@@ -105,6 +294,368 @@ int options_map[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };
 int newProgressDisplay = 1;
 static int forced_disc_profile = 0;
 static u32 forced_audio_sector_size = 0;
+
+#define NGC_MAGIC 0xC2339F3D
+#define WII_MAGIC 0x5D1C9EA3
+#define B_SELECTED 1
+#define B_NOSELECT 0
+static u32 defaultColor = 0xFFFFFFFF;
+
+static char selected_source_drive_letter = 0;
+
+// Definitions for Raw Audio Read
+#define IOCTL_CDROM_READ_RAW_AUDIO_LOCAL 0x2403E
+
+typedef enum {
+    YellowMode2_Local,
+    XAForm2_Local,
+    CDDA_Local
+} TRACK_MODE_TYPE_LOCAL;
+
+typedef struct {
+    LARGE_INTEGER DiskOffset;
+    ULONG SectorCount;
+    TRACK_MODE_TYPE_LOCAL TrackMode;
+} RAW_READ_INFO_LOCAL;
+
+// Definitions for TOC
+#define IOCTL_CDROM_READ_TOC_LOCAL 0x00024000
+#define MAXIMUM_NUMBER_TRACKS_LOCAL 100
+
+typedef struct _TRACK_DATA_LOCAL {
+    UCHAR Reserved;
+    UCHAR Control : 4;
+    UCHAR Adr : 4;
+    UCHAR TrackNumber;
+    UCHAR Reserved1;
+    UCHAR Address[4];
+} TRACK_DATA_LOCAL, *PTRACK_DATA_LOCAL;
+
+typedef struct _CDROM_TOC_LOCAL {
+    UCHAR Length[2];
+    UCHAR FirstTrack;
+    UCHAR LastTrack;
+    TRACK_DATA_LOCAL TrackData[MAXIMUM_NUMBER_TRACKS_LOCAL];
+} CDROM_TOC_LOCAL, *PCDROM_TOC_LOCAL;
+
+void DrawFrameStart();
+void DrawFrameFinish();
+void DrawEmptyBox(int x, int y, int width, int height, u32 color);
+void DrawSelectableButton(int x, int y, int width, int height, char *message, int selected, int id);
+void WriteCentre(int y, char *string);
+u32 get_buttons_pressed();
+
+static int select_source_drive() {
+    char drive_path[32];
+    char root_path[4] = "A:\\";
+    char available_drives[26];
+    int num_drives = 0;
+    int i;
+
+    // Scan for CD/DVD drives
+    for (i = 0; i < 26; i++) {
+        root_path[0] = 'A' + i;
+        if (GetDriveType(root_path) == DRIVE_CDROM) {
+            available_drives[num_drives++] = 'A' + i;
+        }
+    }
+
+    if (num_drives == 0) {
+        DrawFrameStart();
+        DrawEmptyBox(30, 180, vmode->fbWidth - 38, 350, COLOR_BLACK);
+        WriteCentre(255, "No optical drives found!");
+        DrawFrameFinish();
+        sleep(2);
+        return 0;
+    }
+
+    int selected_index = 0;
+    
+    while ((get_buttons_pressed() & PAD_BUTTON_A));
+    while (1) {
+        DrawFrameStart();
+        DrawEmptyBox(30, 180, vmode->fbWidth - 38, 350, COLOR_BLACK);
+        WriteCentre(255, "Please select the source drive");
+        
+        sprintf(drive_path, "Drive %c:", available_drives[selected_index]);
+        DrawSelectableButton(200, 310, -1, 340, drive_path, B_SELECTED, -1);
+        
+        DrawFrameFinish();
+        
+        while (!(get_buttons_pressed() & (PAD_BUTTON_RIGHT | PAD_BUTTON_LEFT | PAD_BUTTON_A | PAD_BUTTON_B)));
+        u32 btns = get_buttons_pressed();
+        
+        if (btns & PAD_BUTTON_RIGHT) {
+            selected_index++;
+            if (selected_index >= num_drives) selected_index = 0;
+        }
+        if (btns & PAD_BUTTON_LEFT) {
+            selected_index--;
+            if (selected_index < 0) selected_index = num_drives - 1;
+        }
+        if (btns & PAD_BUTTON_A) {
+            selected_source_drive_letter = available_drives[selected_index];
+            break;
+        }
+        if (btns & PAD_BUTTON_B) return 0;
+
+        while ((get_buttons_pressed() & (PAD_BUTTON_RIGHT | PAD_BUTTON_LEFT | PAD_BUTTON_A | PAD_BUTTON_B)));
+    }
+    while ((get_buttons_pressed() & PAD_BUTTON_A));
+    return 1;
+}
+
+int init_dvd(bool prompt) {
+    if (hSourceDrive != INVALID_HANDLE_VALUE) {
+        CloseHandle(hSourceDrive);
+        hSourceDrive = INVALID_HANDLE_VALUE;
+    }
+    if (prompt || selected_source_drive_letter == 0) {
+        if (!select_source_drive()) return CANCELLED;
+    }
+    {
+        char path[32];
+        sprintf(path, "\\\\.\\%c:", selected_source_drive_letter);
+        hSourceDrive = CreateFile(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+        if (hSourceDrive == INVALID_HANDLE_VALUE) return NO_DISC;
+        DWORD bytesReturned;
+        if (!DeviceIoControl(hSourceDrive, IOCTL_STORAGE_CHECK_VERIFY, NULL, 0, NULL, 0, &bytesReturned, NULL)) {
+            CloseHandle(hSourceDrive);
+            hSourceDrive = INVALID_HANDLE_VALUE;
+            return NO_DISC;
+        }
+        return 0;
+    }
+    return NO_DISC;
+}
+const char* dvd_error_str() { return "No Error"; }
+u32 dvd_get_error() { return 0; }
+int DVD_LowRead64(void *buf, u32 len, u64 offset) {
+    if (hSourceDrive == INVALID_HANDLE_VALUE) return -1;
+
+    // Try IOCTL for Audio CD (2352 byte sectors)
+    if (len % 2352 == 0) {
+        u32 done = 0;
+        while (done < len) {
+            // Limit chunk size to ~64KB (27 sectors) to avoid driver transfer limits
+            u32 chunk = len - done;
+            if (chunk > (2352 * 27)) chunk = 2352 * 27;
+
+            RAW_READ_INFO_LOCAL rawReadInfo;
+            // Windows expects 2048-byte sector addressing for DiskOffset
+            rawReadInfo.DiskOffset.QuadPart = ((offset + done) / 2352) * 2048;
+            rawReadInfo.SectorCount = chunk / 2352;
+            rawReadInfo.TrackMode = CDDA_Local;
+
+            DWORD bytesReturned;
+            if (!DeviceIoControl(hSourceDrive, IOCTL_CDROM_READ_RAW_AUDIO_LOCAL, 
+                                &rawReadInfo, sizeof(rawReadInfo), 
+                                (u8*)buf + done, chunk, 
+                                &bytesReturned, NULL)) {
+                break;
+            }
+            done += chunk;
+        }
+        if (done == len) return 0;
+    }
+
+    LARGE_INTEGER li;
+    li.QuadPart = offset;
+    if (SetFilePointer(hSourceDrive, li.LowPart, &li.HighPart, FILE_BEGIN) == INVALID_SET_FILE_POINTER && GetLastError() != NO_ERROR) return -1;
+    DWORD bytesRead;
+    if (!ReadFile(hSourceDrive, buf, len, &bytesRead, NULL) || bytesRead != len) return -1;
+    return 0;
+}
+int DVD_LowRead64Datel(void *buf, u32 len, u64 offset, int isKnown) { return 0; }
+void dvd_motor_off(int eject) {}
+void dvd_read_bca(void *buf) {}
+
+void DrawFrameStart() { printf("\033[2J\033[1;1H"); }
+void DrawFrameFinish() { fflush(stdout); }
+void DrawEmptyBox(int x, int y, int width, int height, u32 color) {}
+void DrawSelectableButton(int x, int y, int width, int height, char *message, int selected, int id) { printf("%s %s\n", selected ? "->" : "  ", message); }
+void DrawAButton(int x, int y) { printf("[A] "); }
+void DrawBButton(int x, int y) { printf("[B] "); }
+void WriteFont(int x, int y, char *string) { printf("%s\n", string); }
+void WriteFontStyled(int x, int y, char *string, float size, bool centered, u32 color) { printf("%s\n", string); }
+void WriteCentre(int y, char *string) { printf("%s\n", string); }
+void init_font() {}
+void init_textures() {}
+int DrawYesNoDialog(char *message, char *message2) { return 1; }
+void DrawProgressBar(int percent, char *message, int disc_type) {
+    printf("Progress: [");
+    for (int i = 0; i < 50; i++) {
+        if (i < percent / 2) printf("=");
+        else printf(" ");
+    }
+    printf("] %d%%\n", percent);
+    printf("%s\n", message);
+}
+void DrawProgressDetailed(int percent, char *message, int mb_done, int mb_total, char* discTypeStr, int showChecksums, int disc_type) {
+    printf("Ripping %s\n", discTypeStr);
+    printf("Progress: [");
+    for (int i = 0; i < 50; i++) {
+        if (i < percent / 2) printf("=");
+        else printf(" ");
+    }
+    printf("] %d%%\n", percent);
+    printf("Size: %d / %d MB\n", mb_done, mb_total);
+    printf("%s\n", message);
+    if (showChecksums) printf("Checksums: Enabled\n");
+}
+
+#ifdef __CYGWIN__
+static struct termios orig_termios;
+static int term_setup = 0;
+void disable_raw_mode() { if (term_setup) { tcsetattr(0, TCSANOW, &orig_termios); term_setup = 0; } }
+void enable_raw_mode() { if (!term_setup) { tcgetattr(0, &orig_termios); atexit(disable_raw_mode); struct termios raw = orig_termios; raw.c_lflag &= ~(ECHO | ICANON); raw.c_cc[VMIN] = 0; raw.c_cc[VTIME] = 0; tcsetattr(0, TCSANOW, &raw); term_setup = 1; } }
+
+static u32 current_pad_buttons = 0;
+static u64 last_key_time = 0;
+
+void PAD_Init() { enable_raw_mode(); }
+u32 PAD_ButtonsDown(int pad) { return current_pad_buttons; }
+void PAD_ScanPads() {
+    unsigned char c;
+    if (read(0, &c, 1) == 1) {
+        current_pad_buttons = 0;
+        if (c == 27) {
+            unsigned char seq[2];
+            if (read(0, seq, 2) == 2) {
+                if (seq[0] == '[') {
+                    if (seq[1] == 'A') current_pad_buttons |= PAD_BUTTON_UP;
+                    if (seq[1] == 'B') current_pad_buttons |= PAD_BUTTON_DOWN;
+                    if (seq[1] == 'C') current_pad_buttons |= PAD_BUTTON_RIGHT;
+                    if (seq[1] == 'D') current_pad_buttons |= PAD_BUTTON_LEFT;
+                } else {
+                    current_pad_buttons |= PAD_BUTTON_B;
+                }
+            }
+        } else {
+            if (c == 'a' || c == 'A' || c == '\n') current_pad_buttons |= PAD_BUTTON_A;
+            if (c == 'b' || c == 'B') current_pad_buttons |= PAD_BUTTON_B;
+            if (c == 'x' || c == 'X') current_pad_buttons |= PAD_BUTTON_X;
+            if (c == 'y' || c == 'Y') current_pad_buttons |= PAD_BUTTON_Y;
+            if (c == 'q' || c == 'Q') shutdown = 1;
+        }
+        last_key_time = gettime();
+    } else if (diff_msec(last_key_time, gettime()) > 100) {
+        current_pad_buttons = 0;
+    }
+    usleep(10000);
+}
+
+void VIDEO_Init() {}
+GXRModeObj* VIDEO_GetPreferredMode(void* mode) { 
+    static GXRModeObj m = {0,0,640,480,0,640,480,480}; 
+    return &m; 
+}
+void VIDEO_Configure(GXRModeObj* mode) {}
+void* SYS_AllocateFramebuffer(GXRModeObj* mode) { return malloc(640*480*4); }
+void VIDEO_ClearFrameBuffer(GXRModeObj* mode, void* fb, u32 color) {}
+void VIDEO_SetNextFramebuffer(void* fb) {}
+void VIDEO_SetPostRetraceCallback(void (*callback)(u32)) {}
+void VIDEO_SetBlack(bool black) {}
+void VIDEO_Flush() {}
+void VIDEO_WaitVSync() {}
+void GX_Init(void* fifo, u32 size) {}
+void GX_SetCopyClear(GXColor color, u32 z) {}
+void GX_SetViewport(f32 x, f32 y, f32 w, f32 h, f32 n, f32 f) {}
+void GX_SetDispCopyYScale(f32 y) {}
+void GX_SetDispCopyDst(u16 w, u16 h) {}
+void GX_SetCullMode(u8 mode) {}
+void GX_CopyDisp(void* dest, u8 clear) {}
+
+typedef struct {
+    mqmsg_t* msg_queue;
+    int q_size;
+    int head;
+    int tail;
+    sem_t sem_full;
+    sem_t sem_empty;
+    pthread_mutex_t mutex;
+} mq_obj_t;
+
+void LWP_SetThreadPriority(lwp_t thread, u32 prio) {}
+void LWP_CreateThread(lwp_t* thread, void* (*func)(void*), void* arg, void* stack, u32 stack_size, u32 prio) {
+    pthread_create(thread, NULL, func, arg);
+}
+void MQ_Init(mqbox_t* mq, u32 count) {
+    mq_obj_t* mq_obj = (mq_obj_t*)malloc(sizeof(mq_obj_t));
+    mq_obj->msg_queue = (mqmsg_t*)malloc(sizeof(mqmsg_t) * count);
+    mq_obj->q_size = count;
+    mq_obj->head = 0;
+    mq_obj->tail = 0;
+    sem_init(&mq_obj->sem_full, 0, 0);
+    sem_init(&mq_obj->sem_empty, 0, count);
+    pthread_mutex_init(&mq_obj->mutex, NULL);
+    *mq = mq_obj;
+}
+bool MQ_Receive(mqbox_t mq, mqmsg_t* msg, u32 flags) {
+    mq_obj_t* mq_obj = (mq_obj_t*)mq;
+    if (sem_wait(&mq_obj->sem_full) != 0) return false;
+    pthread_mutex_lock(&mq_obj->mutex);
+    *msg = mq_obj->msg_queue[mq_obj->head];
+    mq_obj->head = (mq_obj->head + 1) % mq_obj->q_size;
+    pthread_mutex_unlock(&mq_obj->mutex);
+    sem_post(&mq_obj->sem_empty);
+    return true;
+}
+bool MQ_Send(mqbox_t mq, mqmsg_t msg, u32 flags) {
+    mq_obj_t* mq_obj = (mq_obj_t*)mq;
+    if (sem_wait(&mq_obj->sem_empty) != 0) return false;
+    pthread_mutex_lock(&mq_obj->mutex);
+    mq_obj->msg_queue[mq_obj->tail] = msg;
+    mq_obj->tail = (mq_obj->tail + 1) % mq_obj->q_size;
+    pthread_mutex_unlock(&mq_obj->mutex);
+    sem_post(&mq_obj->sem_full);
+    return true;
+}
+void MQ_Jam(mqbox_t mq, mqmsg_t msg, u32 flags) {
+    // This is not a real jam, but it will work for the error case.
+    MQ_Send(mq, msg, flags);
+}
+void MQ_Close(mqbox_t mq) {
+    mq_obj_t* mq_obj = (mq_obj_t*)mq;
+    free(mq_obj->msg_queue);
+    free(mq_obj);
+}
+void LWP_JoinThread(lwp_t thread, void** value_ptr) { pthread_join(thread, value_ptr); }
+void LWP_YieldThread() { sched_yield(); }
+int fatMountSimple(const char* name, const DISC_INTERFACE* disc_if) { return 1; }
+void fatUnmount(const char* name) {}
+int ntfsMountDevice(const DISC_INTERFACE* disc_if, ntfs_md** mounts, u32 flags) { return 0; }
+void ntfsUnmount(const char* name, bool force) {}
+char* ntfsGetVolumeName(const char* name) { return "NTFS"; }
+void DCZeroRange(void* addr, u32 len) {}
+void DCFlushRange(void* addr, u32 len) {}
+#endif
+
+u64 gettime() {
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (u64)ts.tv_sec * 1000000000ULL + ts.tv_nsec;
+}
+u32 diff_msec(u64 start, u64 end) {
+	return (u32)((end - start) / 1000000ULL);
+}
+u32 diff_sec(u64 start, u64 end) {
+	return (u32)((end - start) / 1000000000ULL);
+}
+
+void verify_init(char *path) {}
+void verify_download(char *path) {}
+int verify_is_available(int disc_type) { return 0; }
+int verify_findMD5Sum(char *md5, int disc_type) { return 0; }
+int verify_findCrc32(u32 crc32, int disc_type) { return 0; }
+char* verify_get_name(int type) { return "Unknown"; }
+
+void datel_init(char *path) {}
+void datel_download(char *path) {}
+int datel_findMD5Sum(char *md5) { return 0; }
+int datel_findCrcSum(u32 crc) { return 0; }
+char* datel_get_name(int type) { return "Unknown"; }
+void dump_skips(char *path, u32 crc) {}
 
 enum forcedDiscProfile {
 	FORCED_DISC_NONE = 0,
@@ -218,6 +769,7 @@ static void* writer_thread(void* _msgq) {
 
 void print_gecko(const char* fmt, ...)
 {
+#if defined(HW_RVL) || defined(HW_DOL)
 	if(print_usb) {
 		char tempstr[2048];
 		va_list arglist;
@@ -226,6 +778,12 @@ void print_gecko(const char* fmt, ...)
 		va_end(arglist);
 		usb_sendbuffer_safe(1,tempstr,strlen(tempstr));
 	}
+#else
+	va_list arglist;
+	va_start(arglist, fmt);
+	vprintf(fmt, arglist);
+	va_end(arglist);
+#endif
 }
 
 
@@ -242,6 +800,9 @@ void check_exit_status() {
 		void (*rld)() = (void(*)()) 0x80001800;
 		rld();
 	}
+#else
+	if (shutdown)
+		exit(0);
 #endif
 }
 
@@ -292,10 +853,14 @@ u32 get_wii_buttons_pressed(u32 buttons) {
 u32 get_buttons_pressed() {
 	u32 buttons = 0;
 
+#ifdef __CYGWIN__
+    PAD_ScanPads();
+#else
 	if (padNeedScan) {
 		PAD_ScanPads();
 		padNeedScan = 0;
 	}
+#endif
 
 #ifdef HW_RVL
 	buttons = get_wii_buttons_pressed(buttons);
@@ -463,6 +1028,8 @@ static int FindIOS(u32 ios) {
 		}
 	}
 	free(titles);
+    printf("CleanRip for Windows\n");
+    printf("Note: This is currently a stub for compilation verification.\n");
 	return 0;
 }
 
@@ -541,15 +1108,24 @@ static int initialise_dvd() {
 	DrawEmptyBox(30, 180, vmode->fbWidth - 38, 350, COLOR_BLACK);
 	WriteCentre(255, "Initialising Disc ...");
 	DrawFrameFinish();
-	int ret = init_dvd();
+	int ret = init_dvd(true);
+    if (ret == CANCELLED) exit(0);
 
-	if (ret == NO_DISC) {
+	while (ret == NO_DISC) {
 		DrawFrameStart();
 		DrawEmptyBox(30, 180, vmode->fbWidth - 38, 350, COLOR_BLACK);
 		WriteCentre(255, "No disc detected");
+        WriteCentre(280, "Insert disc to continue");
+        WriteCentre(305, "Press B to exit");
 		print_gecko("No disc detected\r\n");
 		DrawFrameFinish();
-		sleep(3);
+		
+        for (int i = 0; i < 20; i++) {
+            u32 btns = get_buttons_pressed();
+            if (btns & PAD_BUTTON_B) exit(0);
+            usleep(100000);
+        }
+        ret = init_dvd(false);
 	}
 	return ret;
 }
@@ -561,10 +1137,10 @@ static int initialise_source() {
 		DrawEmptyBox(30, 180, vmode->fbWidth - 38, 350, COLOR_BLACK);
 		WriteCentre(255, "Initialising USB source drive ...");
 		DrawFrameFinish();
-		if (!usb->startup(usb)) {
+		if (!usb->startup()) {
 			return NO_DISC;
 		}
-		if (!usb->isInserted(usb)) {
+		if (!usb->isInserted()) {
 			return NO_DISC;
 		}
 		return 0;
@@ -577,7 +1153,7 @@ static int source_read(void* dst, u32 len, u64 offset, int disc_type, int isKnow
 		if ((offset & 0x1FF) || (len & 0x1FF)) {
 			return 1;
 		}
-		return usb->readSectors(usb, (sec_t)(offset >> 9), (sec_t)(len >> 9), dst) ? 0 : 1;
+		return usb->readSectors((sec_t)(offset >> 9), (sec_t)(len >> 9), dst) ? 0 : 1;
 	}
 	if (disc_type == IS_DATEL_DISC) {
 		return DVD_LowRead64Datel(dst, len, offset, isKnownDatel);
@@ -642,9 +1218,92 @@ DISC_INTERFACE* get_sd_card_handler(int slot) {
 }
 #endif
 
+#ifdef __CYGWIN__
+static char selected_drive_letter = 0;
+
+static int select_drive() {
+    char drive_path[32];
+    struct stat st;
+    char available_drives[26];
+    int num_drives = 0;
+    int i;
+
+    // Scan for drives
+    for (i = 0; i < 26; i++) {
+        sprintf(drive_path, "%c:/", 'A' + i);
+        if (stat(drive_path, &st) == 0 && S_ISDIR(st.st_mode)) {
+            available_drives[num_drives++] = 'a' + i;
+        }
+    }
+
+    if (num_drives == 0) {
+        DrawFrameStart();
+        DrawEmptyBox(30, 180, vmode->fbWidth - 38, 350, COLOR_BLACK);
+        WriteCentre(255, "No drives found!");
+        DrawFrameFinish();
+        sleep(2);
+        return 0;
+    }
+
+    int selected_index = 0;
+    // Default to 'c' if available
+    for (i = 0; i < num_drives; i++) {
+        if (available_drives[i] == 'c') {
+            selected_index = i;
+            break;
+        }
+    }
+
+    while ((get_buttons_pressed() & PAD_BUTTON_A));
+    while (1) {
+        DrawFrameStart();
+        DrawEmptyBox(30, 180, vmode->fbWidth - 38, 350, COLOR_BLACK);
+        WriteCentre(255, "Please select the output drive");
+        
+        sprintf(drive_path, "Drive %c:", available_drives[selected_index] - 32);
+        DrawSelectableButton(200, 310, -1, 340, drive_path, B_SELECTED, -1);
+        
+        DrawFrameFinish();
+        
+        while (!(get_buttons_pressed() & (PAD_BUTTON_RIGHT | PAD_BUTTON_LEFT | PAD_BUTTON_A | PAD_BUTTON_B)));
+        u32 btns = get_buttons_pressed();
+        
+        if (btns & PAD_BUTTON_RIGHT) {
+            selected_index++;
+            if (selected_index >= num_drives) selected_index = 0;
+        }
+        if (btns & PAD_BUTTON_LEFT) {
+            selected_index--;
+            if (selected_index < 0) selected_index = num_drives - 1;
+        }
+        if (btns & PAD_BUTTON_A) {
+            selected_drive_letter = available_drives[selected_index];
+            break;
+        }
+        if (btns & PAD_BUTTON_B) {
+            return 0;
+        }
+        
+        while ((get_buttons_pressed() & (PAD_BUTTON_RIGHT | PAD_BUTTON_LEFT | PAD_BUTTON_A | PAD_BUTTON_B)));
+    }
+    while ((get_buttons_pressed() & PAD_BUTTON_A));
+    return 1;
+}
+#endif
+
 /* Initialise the device */
 static int initialise_device(int fs) {
 	int ret = 0;
+
+#ifdef __CYGWIN__
+    if (selected_device != TYPE_READONLY) {
+        if (select_drive()) {
+            sprintf(mountPath, "%c:/", selected_drive_letter - 32);
+            return 1;
+        }
+        return 0;
+    }
+#endif
 
 	DrawFrameStart();
 	DrawEmptyBox(30, 180, vmode->fbWidth - 38, 350, COLOR_BLACK);
@@ -893,6 +1552,9 @@ void select_source_type() {
 /* the user must specify the destination device type */
 void select_device_type() {
 	selected_device = 0;
+#ifdef __CYGWIN__
+	return;
+#endif
 	
 	while ((get_buttons_pressed() & PAD_BUTTON_A));
 	while (1) {
@@ -909,7 +1571,7 @@ void select_device_type() {
 			WriteFontStyled(320, 390, "SD Gecko, SD2SP2, GC2SD, FlipperMCE / GCMCE", 0.65f, true, defaultColor);
 		}
 #endif
-#ifdef HW_RVL
+#if defined(HW_RVL) || defined(__CYGWIN__)
 		DrawSelectableButton(100, 310, -1, 340, "USB",
 				(selected_device == TYPE_USB) ? B_SELECTED : B_NOSELECT, -1);
 		DrawSelectableButton(210, 310, -1, 340, "Front SD",
@@ -943,6 +1605,9 @@ void select_device_type() {
 /* the user must specify the file system type */
 int filesystem_type() {
 	int type = TYPE_FAT;
+#ifdef __CYGWIN__
+	return TYPE_NTFS;
+#endif
 	while ((get_buttons_pressed() & PAD_BUTTON_A));
 	while (1) {
 		DrawFrameStart();
@@ -1121,11 +1786,12 @@ static void get_settings(int disc_type) {
 void prompt_new_file(FILE **fp, int chunk, int fs, int silent, int disc_type) {
 	// Close the file and unmount the fs
 	fclose(*fp);
+#ifndef __CYGWIN__
 	if(silent == ASK_USER) {
 		if (fs == TYPE_FAT) {
 			fatUnmount("fat:/");
 			if (selected_device == TYPE_SD) {
-				sdcard->shutdown(sdcard);
+				sdcard->shutdown();
 			}
 #ifdef HW_DOL
 			else if (selected_device == TYPE_M2LOADER) {
@@ -1133,7 +1799,7 @@ void prompt_new_file(FILE **fp, int chunk, int fs, int silent, int disc_type) {
 			}
 #else
 			else if (selected_device == TYPE_USB) {
-				usb->shutdown(usb);
+				usb->shutdown();
 			}
 #endif
 		}
@@ -1141,7 +1807,7 @@ void prompt_new_file(FILE **fp, int chunk, int fs, int silent, int disc_type) {
 			ntfsUnmount(mounts[0].name, true);
 			free(mounts);
 			if (selected_device == TYPE_SD) {
-				sdcard->shutdown(sdcard);
+				sdcard->shutdown();
 			}
 #ifdef HW_DOL
 			else if (selected_device == TYPE_M2LOADER) {
@@ -1149,7 +1815,7 @@ void prompt_new_file(FILE **fp, int chunk, int fs, int silent, int disc_type) {
 			}
 #else
 			else if (selected_device == TYPE_USB) {
-				usb->shutdown(usb);
+				usb->shutdown();
 			}
 #endif
 		}
@@ -1217,6 +1883,7 @@ void prompt_new_file(FILE **fp, int chunk, int fs, int silent, int disc_type) {
 			}
 		} while (ret != 1);
 	}
+#endif
 
 	*fp = NULL;
 	sprintf(txtbuffer, "%s%s.part%i%s", &mountPath[0], &gameName[0], chunk, get_output_extension(disc_type));
@@ -1232,9 +1899,11 @@ void prompt_new_file(FILE **fp, int chunk, int fs, int silent, int disc_type) {
 		sleep(5);
 		exit(0);
 	}
+#ifndef __CYGWIN__
 	if(silent == ASK_USER) {
 		initialise_source();
 	}
+#endif
 }
 
 void dump_bca() {
@@ -1284,16 +1953,63 @@ void dump_audio_cue(const char *audioFileName, int isWave) {
 	}
 
 	sprintf(txtbuffer, "%s%s.cue", &mountPath[0], &gameName[0]);
+	printf("\n*** Attempting to write CUE to %s ***\n", txtbuffer);
+    fflush(stdout);
 	remove(&txtbuffer[0]);
 	FILE *fp = fopen(txtbuffer, "wb");
 	if (!fp) {
+		printf("Error opening CUE file: %s\n", strerror(errno));
+        printf("MountPath: %s, GameName: %s\n", mountPath, gameName);
 		return;
 	}
 
 	fprintf(fp, "FILE \"%s\" %s\r\n", audioFileName, isWave ? "WAVE" : "BINARY");
-	fprintf(fp, "  TRACK 01 AUDIO\r\n");
-	fprintf(fp, "    INDEX 01 00:00:00\r\n");
+
+    int toc_read = 0;
+    if (hSourceDrive != INVALID_HANDLE_VALUE) {
+        CDROM_TOC_LOCAL toc;
+        DWORD bytesReturned;
+        if (DeviceIoControl(hSourceDrive, IOCTL_CDROM_READ_TOC_LOCAL, NULL, 0, &toc, sizeof(toc), &bytesReturned, NULL)) {
+            printf("TOC read successfully. Tracks: %d-%d\n", toc.FirstTrack, toc.LastTrack);
+            toc_read = 1;
+            for (int i = toc.FirstTrack; i <= toc.LastTrack; i++) {
+                int index = i - toc.FirstTrack;
+                if (index >= MAXIMUM_NUMBER_TRACKS_LOCAL) break;
+                
+                TRACK_DATA_LOCAL *tr = &toc.TrackData[index];
+                
+                // Address is MSF. Byte 1=M, 2=S, 3=F.
+                u32 m = tr->Address[1];
+                u32 s = tr->Address[2];
+                u32 f = tr->Address[3];
+                
+                // Convert to frames
+                u32 frames = (m * 60 + s) * 75 + f;
+                
+                // Subtract 2 seconds (150 frames) for relative time from start of file (assuming file starts at 00:02:00 abs)
+                if (frames >= 150) frames -= 150;
+                else frames = 0;
+                
+                m = frames / (75 * 60);
+                s = (frames / 75) % 60;
+                f = frames % 75;
+                
+                fprintf(fp, "  TRACK %02d AUDIO\r\n", tr->TrackNumber);
+                fprintf(fp, "    INDEX 01 %02d:%02d:%02d\r\n", m, s, f);
+            }
+        } else {
+            printf("DeviceIoControl TOC failed: %lu\n", GetLastError());
+        }
+    }
+
+    if (!toc_read) {
+        printf("Using default 1-track CUE.\n");
+        fprintf(fp, "  TRACK 01 AUDIO\r\n");
+        fprintf(fp, "    INDEX 01 00:00:00\r\n");
+    }
+
 	fclose(fp);
+    printf("*** CUE file created successfully ***\n");
 }
 
 void dump_info(char *md5, char *sha1, u32 crc32, int verified, u32 seconds, char* name) {
@@ -1340,7 +2056,7 @@ void dump_info(char *md5, char *sha1, u32 crc32, int verified, u32 seconds, char
 	}
 }
 
-void renameFile(char* mountPath, char* befor, char* after, char* base) {
+void renameFile(const char* mountPath, const char* befor, const char* after, const char* base) {
 	char tempstr[2048];
 
 	if (mountPath == NULL || befor == NULL || after == NULL || base == NULL) return;
@@ -1403,7 +2119,7 @@ int dump_game(int disc_type, int fs) {
 	MQ_Init(&msgq, MSG_COUNT);
 
 	// since libogc is too shitty to be able to get the current thread priority, just force it to a known value
-	LWP_SetThreadPriority(0, THREAD_PRIO);
+	LWP_SetThreadPriority(pthread_self(), THREAD_PRIO);
 	// writer thread should have same priority so it can be yielded to
 	LWP_CreateThread(&writer, writer_thread, (void*)msgq, NULL, 0, THREAD_PRIO);
 
@@ -1419,7 +2135,7 @@ int dump_game(int disc_type, int fs) {
 	u32 target_read_size = READ_SIZE;
 	if (is_audio_profile && sector_size == 2352) {
 		// Keep blocks aligned to CDDA frames.
-		target_read_size = (audio_mode == AUDIO_OUT_WAV_BEST) ? (2352 * 32) : (2352 * 96);
+		target_read_size = (READ_SIZE / 2352) * 2352;
 	}
 	u32 read_sectors = target_read_size / sector_size;
 	if (read_sectors == 0) {
@@ -1895,10 +2611,13 @@ int dump_game(int disc_type, int fs) {
 			dump_info(NULL, NULL, crc32, verified, diff_sec(startTime, gettime()), NULL);
 		}
 		if (is_audio_profile && selected_device != TYPE_READONLY) {
+            printf("Debug: Calling dump_audio_cue\n"); fflush(stdout);
 			char cueFileName[64];
 			int cueIsWave = (strcmp(output_ext, ".wav") == 0);
 			sprintf(cueFileName, "%s%s", &gameName[0], output_ext);
 			dump_audio_cue(&cueFileName[0], cueIsWave);
+            sprintf(txtbuffer, "CUE Location: %s%s.cue", mountPath, gameName);
+            WriteCentre(360, txtbuffer);
 		}
 		if ((disc_type == IS_DATEL_DISC) && !(verified)) {
 			dump_skips(&mountPath[0], crc100000);
@@ -1928,12 +2647,16 @@ int main(int argc, char **argv) {
 #ifdef HW_RVL
 	iosversion = IOS_GetVersion();
 #endif
+#if defined(HW_RVL) || defined(HW_DOL)
 	if(usb_isgeckoalive(1)) {
 		usb_flush(1);
 		print_usb = 1;
 	}
+#endif
 	print_gecko("CleanRip Version %i.%i.%i\r\n",V_MAJOR, V_MID, V_MINOR);
+#if defined(HW_RVL) || defined(HW_DOL)
 	print_gecko("Arena Size: %iKb\r\n",(SYS_GetArena1Hi()-SYS_GetArena1Lo())/1024);
+#endif
 
 #ifdef HW_RVL
 	print_gecko("Running on IOS ver: %i\r\n", iosversion);

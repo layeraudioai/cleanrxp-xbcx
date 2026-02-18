@@ -73,7 +73,8 @@ enum discTypes
 	IS_NGC_DISC=0,
 	IS_WII_DISC,
 	IS_DATEL_DISC,
-	IS_UNK_DISC
+	IS_UNK_DISC,
+	IS_OTHER_DISC
 };
 
 enum options
@@ -83,7 +84,8 @@ enum options
 	NGC_ALIGN_BOUNDARY,
 	WII_DUAL_LAYER,
 	WII_CHUNK_SIZE,
-	WII_NEWFILE
+	WII_NEWFILE,
+	AUDIO_OUTPUT
 };
 
 enum dualOptions
@@ -109,6 +111,15 @@ enum newFileOptions
   ASK_USER=0,
   AUTO_CHUNK,
   NEWFILE_DELIM
+};
+
+enum audioOutputOptions
+{
+  AUDIO_OUT_BIN=0,
+  AUDIO_OUT_WAV,
+  AUDIO_OUT_WAV_FAST,
+  AUDIO_OUT_WAV_BEST,
+  AUDIO_OUT_DELIM
 };
 
 enum settingsAskStatus

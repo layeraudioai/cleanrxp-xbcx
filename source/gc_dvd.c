@@ -128,9 +128,8 @@ int init_dvd() {
 	mask32(0x0D800194, 0, 0x400);
 
 	error = dvd_get_error();
-	if ((error >> 24) == 1) {
-		return NO_DISC;
-	}
+	// Some non-standard media can report transient "no disc" style errors here.
+	// Attempt full init/read-id first before deciding the tray is truly empty.
 
 	if ((!dvd_hard_init) || (dvd_get_error())) {
 		// read id
@@ -144,6 +143,11 @@ int init_dvd() {
 		while (dvd[7] & 1)
 			usleep(20000);
 		dvd_hard_init = 1;
+	}
+
+	error = dvd_get_error();
+	if ((error >> 24) == 1) {
+		return NO_DISC;
 	}
 
 	if ((dvd_get_error() & 0xFFFFFF) == 0x053000) {
@@ -392,4 +396,3 @@ char *dvd_error_str() {
 	return &error_str[0];
 
 }
-
