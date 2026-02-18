@@ -1,3 +1,11 @@
+be patient at the start of the rips, they speed up with time
+it might say 20min for an audio cd at the start
+itll be less than 3min tho
+
+# WIP
+1: Windows compiling works (see releases), and I can confirm that even the fast wav rip produces an authentic rip for audio cds (on windows)
+ 2: DVD-Video and Audio CD ripping on ngc and wii are started but also wip
+
 # Introduction
 A tool to backup your Gamecube/Wii Discs via IOS58
 Create 1:1 backups of your GC/Wii discs for archival purposes without any requirements for custom IOS (cIOS). Supports USB 2.0 / NTFS / exFAT & Front SD.
@@ -26,7 +34,7 @@ If you have any questions about CleanRip, please make a thread over at http://ww
 
 3. Install dependencies: `pacman -S gamecube-tools-git libogc2 libogc2-libdvm libogc2-libntfs ppc-mxml`
 
-4. Build the project: Run `make` in the root directory of the project.
+4. Build the project: Run `make` , `make -f Makefile.ngc` , or `make -f Makefile.windows` in the root directory of the project.
 
 # Device Compatibility
 Please note that the Wii can be picky about particular USB drives/storage devices. It's recommended to use a Y cable for hard drives that fail to power up from one USB port alone. If USB flash storage doesn't want to work, try a different brand/size. SD cards on GameCube will potentially have similar issues, it's best to have a few different brands/sizes/types at your disposal.
