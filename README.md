@@ -4,7 +4,7 @@ itll be less than 3min tho
 
 # WIP
 1: Windows compiling works (see releases), and I can confirm that even the fast wav rip produces an authentic rip for audio cds (on windows)
-2: DVD-Video and Audio CD ripping on ngc and wii are started but also wip
+ 2: DVD-Video and Audio CD ripping on ngc and wii are started but also wip
 
 # Introduction
 A tool to backup your Gamecube/Wii Discs via IOS58
