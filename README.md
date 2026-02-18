@@ -5,8 +5,8 @@ itll be less than 3min tho
 
 # WIP
 *Windows compiling works (see releases), and I can confirm that even the fast wav rip produces an authentic rip for audio cds (on windows)
-**you can rip any audio cd on the planet to any number of channels at high quality by increasing the number of passes
-***example: 44100Hz 2 channels = 1 pass, 1152000Hz 1024 channels =  13375 passes
+* *you can rip any audio cd on the planet to any number of channels at high quality by increasing the number of passes
+* * *example: 44100Hz 2 channels = 1 pass, 1152000Hz 1024 channels =  13375 passes
 *DVD-Video and Audio CD ripping on ngc and wii are started but also wip
 
 # Introduction
