@@ -2609,13 +2609,6 @@ int dump_game(int disc_type, int fs) {
 		if (is_audio_profile && strcmp(output_ext, ".wav") == 0 && num_passes == 1) {
 			write_wav_header(fp, 0, wav_channels, sample_rate);
 		}
-		if (is_audio_profile) {
-			printf("Debug: Calling dump_audio_cue at start\n"); fflush(stdout);
-			char cueFileName[64];
-			int cueIsWave = (strcmp(output_ext, ".wav") == 0);
-			sprintf(cueFileName, "%s%s", &gameName[0], output_ext);
-			dump_audio_cue(cueFileName, cueIsWave);
-		}
 		msg.command = MSG_SETFILE;
 		msg.data = fp;
 		MQ_Send(msgq, (mqmsg_t)&msg, MQ_MSG_BLOCK);
@@ -3106,9 +3099,6 @@ int dump_game(int disc_type, int fs) {
 		}
         printf("Debug: Checking audio profile. is_audio_profile=%d, disc_type=%d, forced_disc_profile=%d\n", is_audio_profile, disc_type, forced_disc_profile);
         fflush(stdout);
-		if (is_audio_profile && selected_device != TYPE_READONLY) {
-			// CUE file is now generated at the start of the rip
-		}
 		if ((disc_type == IS_DATEL_DISC) && !(verified)) {
 			dump_skips(&mountPath[0], crc100000);
 			
@@ -3121,6 +3111,16 @@ int dump_game(int disc_type, int fs) {
 			renameFile(&mountPath[0], &gameName[0], &tempstr[0], ".bca");
 #endif
 		}
+		if (is_audio_profile && selected_device != TYPE_READONLY) {
+			char final_audio_filename[512];
+			const char* base_name = name ? name : gameName;
+
+			sprintf(final_audio_filename, "%s%s", base_name, output_ext);
+
+			int isWave = (strcmp(output_ext, ".wav") == 0);
+			dump_audio_cue(final_audio_filename, isWave);
+		}
+
 		dvd_motor_off(should_eject ? 1 : 0);
 		wait_press_A_exit_B(false);
 	}
