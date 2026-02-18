@@ -8,3 +8,4 @@ cleanrxp-xbcx.exe
 .vscode/settings.json
 .vscode/dryrun.log
 .vscode/configurationCache.log
+.vscode/arm_toolchain.json

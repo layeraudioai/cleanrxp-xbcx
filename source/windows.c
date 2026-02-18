@@ -124,7 +124,9 @@ enum {
 };
 static const DISC_INTERFACE* sdcard = NULL;
 static const DISC_INTERFACE* usb = NULL;
-static HANDLE hSourceDrive = INVALID_HANDLE_VALUE;
+#define MAX_SOURCE_DRIVES 8
+static HANDLE hSourceDrives[MAX_SOURCE_DRIVES] = {INVALID_HANDLE_VALUE, INVALID_HANDLE_VALUE, INVALID_HANDLE_VALUE, INVALID_HANDLE_VALUE, INVALID_HANDLE_VALUE, INVALID_HANDLE_VALUE, INVALID_HANDLE_VALUE, INVALID_HANDLE_VALUE};
+static int numSourceDrives = 0;
 
 #else
 #include <gccore.h>
@@ -202,6 +204,7 @@ enum {
 	WII_DUAL_LAYER,
 	WII_CHUNK_SIZE,
 	WII_NEWFILE,
+	AUTO_EJECT,
 	AUDIO_OUTPUT,
 	MAX_OPTIONS
 };
@@ -237,6 +240,12 @@ enum {
 	AUDIO_OUT_WAV_FAST,
 	AUDIO_OUT_WAV_BEST,
 	AUDIO_OUT_DELIM
+};
+
+enum {
+	EJECT_NO = 0,
+	EJECT_YES,
+	EJECT_DELIM
 };
 
 #define DEFAULT_FIFO_SIZE    (256*1024)//(64*1024) minimum
@@ -294,7 +303,7 @@ u32 iosversion = -1;
 int verify_type_in_use = 0;
 GXRModeObj *vmode = NULL;
 u32 *xfb[2] = { NULL, NULL };
-int options_map[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };
+int options_map[MAX_OPTIONS] = { 0 };
 int newProgressDisplay = 1;
 static int forced_disc_profile = 0;
 static u32 forced_audio_sector_size = 0;
@@ -305,7 +314,7 @@ static u32 forced_audio_sector_size = 0;
 #define B_NOSELECT 0
 static u32 defaultColor = 0xFFFFFFFF;
 
-static char selected_source_drive_letter = 0;
+static char selected_source_drive_letters[MAX_SOURCE_DRIVES] = {0};
 
 // Definitions for Raw Audio Read
 #define IOCTL_CDROM_READ_RAW_AUDIO_LOCAL 0x2403E
@@ -342,6 +351,101 @@ typedef struct _CDROM_TOC_LOCAL {
     TRACK_DATA_LOCAL TrackData[MAXIMUM_NUMBER_TRACKS_LOCAL];
 } CDROM_TOC_LOCAL, *PCDROM_TOC_LOCAL;
 
+// Definitions for CD-TEXT
+#ifndef IOCTL_CDROM_BASE
+#define IOCTL_CDROM_BASE FILE_DEVICE_CD_ROM
+#endif
+#define IOCTL_CDROM_READ_TOC_EX_LOCAL       CTL_CODE(IOCTL_CDROM_BASE, 0x0015, METHOD_BUFFERED, FILE_READ_ACCESS)
+#define CDROM_READ_TOC_EX_FORMAT_CDTEXT     0x05
+
+typedef struct _CDROM_READ_TOC_EX_LOCAL {
+    UCHAR Format : 4;
+    UCHAR Reserved1 : 3;
+    UCHAR Msf : 1;
+    UCHAR SessionTrack;
+    UCHAR Reserved2;
+    UCHAR Reserved3;
+} CDROM_READ_TOC_EX_LOCAL, *PCDROM_READ_TOC_EX_LOCAL;
+
+#define CD_TEXT_PACKET_TEXT_LENGTH 12
+
+typedef struct _CDROM_CD_TEXT_PACKET_LOCAL {
+    UCHAR PackType;
+    UCHAR TrackNumber;
+    UCHAR SequenceNumber;
+    UCHAR CharacterPosition : 4;
+    UCHAR BlockNumber : 3;
+    UCHAR Unicode : 1;
+    UCHAR Text[CD_TEXT_PACKET_TEXT_LENGTH];
+    UCHAR Crc[2];
+} CDROM_CD_TEXT_PACKET_LOCAL, *PCDROM_CD_TEXT_PACKET_LOCAL;
+
+typedef struct _CDROM_TOC_CD_TEXT_DATA_LOCAL {
+    UCHAR Length[2];
+    UCHAR Reserved1;
+    UCHAR Reserved2;
+    CDROM_CD_TEXT_PACKET_LOCAL Descriptors[1]; // Variable length
+} CDROM_TOC_CD_TEXT_DATA_LOCAL, *PCDROM_TOC_CD_TEXT_DATA_LOCAL;
+
+// PackType values
+#define CDROM_CD_TEXT_TYPE_TITLE        0x80
+#define CDROM_CD_TEXT_TYPE_PERFORMER    0x81
+
+static char cdtext_album_artist[256] = {0};
+static char cdtext_album_title[256] = {0};
+static char cdtext_track_titles[MAXIMUM_NUMBER_TRACKS_LOCAL][256] = {{0}};
+
+static void read_cd_text() {
+    if (numSourceDrives == 0 || hSourceDrives[0] == INVALID_HANDLE_VALUE) return;
+
+    memset(cdtext_album_artist, 0, sizeof(cdtext_album_artist));
+    memset(cdtext_album_title, 0, sizeof(cdtext_album_title));
+    for (int i = 0; i < MAXIMUM_NUMBER_TRACKS_LOCAL; i++) {
+        memset(cdtext_track_titles[i], 0, sizeof(cdtext_track_titles[0]));
+    }
+
+    CDROM_READ_TOC_EX_LOCAL tocEx;
+    memset(&tocEx, 0, sizeof(tocEx));
+    tocEx.Format = CDROM_READ_TOC_EX_FORMAT_CDTEXT;
+    tocEx.Msf = 0;
+    tocEx.SessionTrack = 1;
+
+    DWORD dataSize = sizeof(CDROM_TOC_CD_TEXT_DATA_LOCAL) - sizeof(CDROM_CD_TEXT_PACKET_LOCAL) + (sizeof(CDROM_CD_TEXT_PACKET_LOCAL) * 512);
+    PCDROM_TOC_CD_TEXT_DATA_LOCAL textData = (PCDROM_TOC_CD_TEXT_DATA_LOCAL)malloc(dataSize);
+    if (!textData) return;
+
+    DWORD bytesReturned;
+    if (DeviceIoControl(hSourceDrives[0], IOCTL_CDROM_READ_TOC_EX_LOCAL, &tocEx, sizeof(tocEx), textData, dataSize, &bytesReturned, NULL)) {
+        int numDescriptors = ((textData->Length[0] << 8) | textData->Length[1]) / sizeof(CDROM_CD_TEXT_PACKET_LOCAL);
+
+        for (int i = 0; i < numDescriptors; i++) {
+            PCDROM_CD_TEXT_PACKET_LOCAL packet = &textData->Descriptors[i];
+            char* target_buffer = NULL;
+            int track_num = packet->TrackNumber;
+
+            switch (packet->PackType) {
+                case CDROM_CD_TEXT_TYPE_TITLE:
+                    if (track_num == 0) target_buffer = cdtext_album_title;
+                    else if (track_num > 0 && track_num <= MAXIMUM_NUMBER_TRACKS_LOCAL) {
+                        target_buffer = cdtext_track_titles[track_num - 1];
+                    }
+                    break;
+                case CDROM_CD_TEXT_TYPE_PERFORMER:
+                    if (track_num == 0) target_buffer = cdtext_album_artist;
+                    break;
+            }
+
+            if (target_buffer) {
+                int offset = packet->SequenceNumber * CD_TEXT_PACKET_TEXT_LENGTH;
+                if (offset + CD_TEXT_PACKET_TEXT_LENGTH < 256) {
+                    memcpy(target_buffer + offset, packet->Text, CD_TEXT_PACKET_TEXT_LENGTH);
+                }
+            }
+        }
+    }
+    free(textData);
+}
+
 void DrawFrameStart();
 void DrawFrameFinish();
 void DrawEmptyBox(int x, int y, int width, int height, u32 color);
@@ -349,7 +453,7 @@ void DrawSelectableButton(int x, int y, int width, int height, char *message, in
 void WriteCentre(int y, char *string);
 u32 get_buttons_pressed();
 
-static int select_source_drive() {
+static int select_source_drives() {
     char drive_path[32];
     char root_path[4] = "A:\\";
     char available_drives[26];
@@ -374,20 +478,39 @@ static int select_source_drive() {
     }
 
     int selected_index = 0;
+    memset(selected_source_drive_letters, 0, sizeof(selected_source_drive_letters));
+    int selection_count = 0;
     
     while ((get_buttons_pressed() & PAD_BUTTON_A));
     while (1) {
         DrawFrameStart();
         DrawEmptyBox(30, 180, vmode->fbWidth - 38, 350, COLOR_BLACK);
-        WriteCentre(255, "Please select the source drive");
+        WriteCentre(255, "Select source drives (A to toggle, S to done)");
         
-        sprintf(drive_path, "Drive %c:", available_drives[selected_index]);
-        DrawSelectableButton(200, 310, -1, 340, drive_path, B_SELECTED, -1);
+        for (int i = 0; i < num_drives; i++) {
+            int is_selected = 0;
+            for (int j = 0; j < MAX_SOURCE_DRIVES; j++) {
+                if (selected_source_drive_letters[j] == available_drives[i]) {
+                    is_selected = 1;
+                    break;
+                }
+            }
+            sprintf(drive_path, "[%c] Drive %c:", is_selected ? 'X' : ' ', available_drives[i]);
+            if (i == selected_index) {
+                DrawSelectableButton(200, 310, -1, 340, drive_path, B_SELECTED, -1);
+            }
+        }
+        
+        sprintf(txtbuffer, "Selected: %d", selection_count);
+        WriteCentre(360, txtbuffer);
         
         DrawFrameFinish();
         
-        while (!(get_buttons_pressed() & (PAD_BUTTON_RIGHT | PAD_BUTTON_LEFT | PAD_BUTTON_A | PAD_BUTTON_B)));
-        u32 btns = get_buttons_pressed();
+        u32 btns = 0;
+        while (1) {
+            btns = get_buttons_pressed();
+            if (btns & (PAD_BUTTON_RIGHT | PAD_BUTTON_LEFT | PAD_BUTTON_A | PAD_BUTTON_B | PAD_BUTTON_START)) break;
+        }
         
         if (btns & PAD_BUTTON_RIGHT) {
             selected_index++;
@@ -398,43 +521,79 @@ static int select_source_drive() {
             if (selected_index < 0) selected_index = num_drives - 1;
         }
         if (btns & PAD_BUTTON_A) {
-            selected_source_drive_letter = available_drives[selected_index];
-            break;
+            char drive = available_drives[selected_index];
+            int found = -1;
+            for (int j = 0; j < MAX_SOURCE_DRIVES; j++) {
+                if (selected_source_drive_letters[j] == drive) {
+                    found = j;
+                    break;
+                }
+            }
+            if (found != -1) {
+                selected_source_drive_letters[found] = 0;
+                for (int j = found; j < MAX_SOURCE_DRIVES - 1; j++) {
+                    selected_source_drive_letters[j] = selected_source_drive_letters[j+1];
+                }
+                selected_source_drive_letters[MAX_SOURCE_DRIVES-1] = 0;
+                selection_count--;
+            } else {
+                if (selection_count < MAX_SOURCE_DRIVES) {
+                    selected_source_drive_letters[selection_count++] = drive;
+                }
+            }
+        }
+        if (btns & PAD_BUTTON_START) {
+            if (selection_count > 0) break;
         }
         if (btns & PAD_BUTTON_B) return 0;
 
-        while ((get_buttons_pressed() & (PAD_BUTTON_RIGHT | PAD_BUTTON_LEFT | PAD_BUTTON_A | PAD_BUTTON_B)));
+        while ((get_buttons_pressed() & (PAD_BUTTON_RIGHT | PAD_BUTTON_LEFT | PAD_BUTTON_A | PAD_BUTTON_B | PAD_BUTTON_START)));
     }
     while ((get_buttons_pressed() & PAD_BUTTON_A));
     return 1;
 }
 
 int init_dvd(bool prompt) {
-    if (hSourceDrive != INVALID_HANDLE_VALUE) {
-        CloseHandle(hSourceDrive);
-        hSourceDrive = INVALID_HANDLE_VALUE;
-    }
-    if (prompt || selected_source_drive_letter == 0) {
-        if (!select_source_drive()) return CANCELLED;
-    }
-    {
-        char path[32];
-        sprintf(path, "\\\\.\\%c:", selected_source_drive_letter);
-        hSourceDrive = CreateFile(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
-        if (hSourceDrive == INVALID_HANDLE_VALUE) return NO_DISC;
-        DWORD bytesReturned;
-        if (!DeviceIoControl(hSourceDrive, IOCTL_STORAGE_CHECK_VERIFY, NULL, 0, NULL, 0, &bytesReturned, NULL)) {
-            CloseHandle(hSourceDrive);
-            hSourceDrive = INVALID_HANDLE_VALUE;
-            return NO_DISC;
+    for (int i = 0; i < MAX_SOURCE_DRIVES; i++) {
+        if (hSourceDrives[i] != INVALID_HANDLE_VALUE) {
+            CloseHandle(hSourceDrives[i]);
+            hSourceDrives[i] = INVALID_HANDLE_VALUE;
         }
-        return 0;
     }
+    numSourceDrives = 0;
+
+    if (prompt || selected_source_drive_letters[0] == 0) {
+        if (!select_source_drives()) return CANCELLED;
+    }
+    
+    for (int i = 0; i < MAX_SOURCE_DRIVES; i++) {
+        if (selected_source_drive_letters[i] == 0) break;
+        
+        char path[32];
+        sprintf(path, "\\\\.\\%c:", selected_source_drive_letters[i]);
+        HANDLE h = CreateFile(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+        if (h != INVALID_HANDLE_VALUE) {
+            DWORD bytesReturned;
+            if (DeviceIoControl(h, IOCTL_STORAGE_CHECK_VERIFY, NULL, 0, NULL, 0, &bytesReturned, NULL)) {
+                hSourceDrives[numSourceDrives++] = h;
+            } else {
+                CloseHandle(h);
+            }
+        }
+    }
+    
+    if (numSourceDrives > 0) return 0;
     return NO_DISC;
 }
 const char* dvd_error_str() { return "No Error"; }
 u32 dvd_get_error() { return 0; }
 int DVD_LowRead64(void *buf, u32 len, u128 offset) {
+    if (numSourceDrives == 0) return -1;
+
+    // Stripe reads across drives based on 1MB chunks
+    int drive_idx = (int)((offset / 1048576) % numSourceDrives);
+    HANDLE hSourceDrive = hSourceDrives[drive_idx];
+
     if (hSourceDrive == INVALID_HANDLE_VALUE) return -1;
 
     // Try IOCTL for Audio CD (2352 byte sectors)
@@ -470,8 +629,43 @@ int DVD_LowRead64(void *buf, u32 len, u128 offset) {
     if (!ReadFile(hSourceDrive, buf, len, &bytesRead, NULL) || bytesRead != len) return -1;
     return 0;
 }
+
+/*
+int init_dvd(bool prompt) {
+    if (hSourceDrive != INVALID_HANDLE_VALUE) {
+        CloseHandle(hSourceDrive);
+        hSourceDrive = INVALID_HANDLE_VALUE;
+    }
+    if (prompt || selected_source_drive_letter == 0) {
+        if (!select_source_drive()) return CANCELLED;
+    }
+    {
+        char path[32];
+        sprintf(path, "\\\\.\\%c:", selected_source_drive_letter);
+        hSourceDrive = CreateFile(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+        if (hSourceDrive == INVALID_HANDLE_VALUE) return NO_DISC;
+        DWORD bytesReturned;
+        if (!DeviceIoControl(hSourceDrive, IOCTL_STORAGE_CHECK_VERIFY, NULL, 0, NULL, 0, &bytesReturned, NULL)) {
+            CloseHandle(hSourceDrive);
+            hSourceDrive = INVALID_HANDLE_VALUE;
+            return NO_DISC;
+        }
+        return 0;
+    }
+    return NO_DISC;
+}
+*/
 int DVD_LowRead64Datel(void *buf, u32 len, u128 offset, int isKnown) { return 0; }
-void dvd_motor_off(int eject) {}
+void dvd_motor_off(int eject) {
+    if (eject && numSourceDrives > 0) {
+        for (int i = 0; i < numSourceDrives; i++) {
+            if (hSourceDrives[i] != INVALID_HANDLE_VALUE) {
+                DWORD bytesReturned;
+                DeviceIoControl(hSourceDrives[i], IOCTL_STORAGE_EJECT_MEDIA, NULL, 0, NULL, 0, &bytesReturned, NULL);
+            }
+        }
+    }
+}
 void dvd_read_bca(void *buf) {}
 
 void DrawFrameStart() { printf("\033[2J\033[1;1H"); }
@@ -541,6 +735,7 @@ void PAD_ScanPads() {
             if (c == 'x' || c == 'X') current_pad_buttons |= PAD_BUTTON_X;
             if (c == 'y' || c == 'Y') current_pad_buttons |= PAD_BUTTON_Y;
             if (c == 'q' || c == 'Q') shutdown = 1;
+            if (c == 's' || c == 'S') current_pad_buttons |= PAD_BUTTON_START;
         }
         last_key_time = gettime();
     } else if (diff_msec(last_key_time, gettime()) > 100) {
@@ -720,10 +915,10 @@ static void sanitize_game_name() {
 static u32 detect_audio_cd_size_sectors(u32 sector_size) {
 	(void)sector_size;
 
-    if (hSourceDrive != INVALID_HANDLE_VALUE) {
+    if (numSourceDrives > 0 && hSourceDrives[0] != INVALID_HANDLE_VALUE) {
         CDROM_TOC_LOCAL toc;
         DWORD bytesReturned;
-        if (DeviceIoControl(hSourceDrive, IOCTL_CDROM_READ_TOC_LOCAL, NULL, 0, &toc, sizeof(toc), &bytesReturned, NULL)) {
+        if (DeviceIoControl(hSourceDrives[0], IOCTL_CDROM_READ_TOC_LOCAL, NULL, 0, &toc, sizeof(toc), &bytesReturned, NULL)) {
             int leadOutIndex = toc.LastTrack - toc.FirstTrack + 1;
             if (leadOutIndex < MAXIMUM_NUMBER_TRACKS_LOCAL) {
                 TRACK_DATA_LOCAL *tr = &toc.TrackData[leadOutIndex];
@@ -911,6 +1106,10 @@ u32 get_buttons_pressed() {
 
 	if (gcPad & PAD_BUTTON_DOWN) {
 		buttons |= PAD_BUTTON_DOWN;
+	}
+
+	if (gcPad & PAD_BUTTON_START) {
+		buttons |= PAD_BUTTON_START;
 	}
 
 	if (gcPad & PAD_TRIGGER_Z) {
@@ -1439,6 +1638,13 @@ static int identify_disc() {
 		print_gecko("Wii disc\r\n");
 		return IS_WII_DISC;
 	}
+	// It's not a GC/Wii disc, let's see if it's an audio CD with CD-TEXT
+	read_cd_text();
+	if (cdtext_album_artist[0] && cdtext_album_title[0]) {
+		snprintf(gameName, sizeof(gameName), "%s - %s", cdtext_album_artist, cdtext_album_title);
+	} else if (cdtext_album_title[0]) {
+		snprintf(gameName, sizeof(gameName), "%s", cdtext_album_title);
+	}
 	sanitize_game_name();
 	print_gecko("Unkown disc\r\n");
 	return IS_UNK_DISC;
@@ -1699,6 +1905,13 @@ char *getAudioOutputOption() {
 	return 0;
 }
 
+char *getAutoEjectOption() {
+	int opt = options_map[AUTO_EJECT];
+	if (opt == EJECT_YES)
+		return "Yes";
+	return "No";
+}
+
 int getMaxPos(int option_pos) {
 	switch (option_pos) {
 	case WII_DUAL_LAYER:
@@ -1709,6 +1922,8 @@ int getMaxPos(int option_pos) {
 		return NEWFILE_DELIM;
 	case AUDIO_OUTPUT:
 		return AUDIO_OUT_DELIM;
+	case AUTO_EJECT:
+		return EJECT_DELIM;
 	}
 	return 0;
 }
@@ -1733,7 +1948,7 @@ static void get_settings(int disc_type) {
 	}
 	else if (disc_type == IS_OTHER_DISC) {
 		// For forced non-Nintendo profiles expose chunking + audio output mode.
-		maxSettingPos = (forced_disc_profile == FORCED_AUDIO_CD) ? 2 : 1;
+		maxSettingPos = (forced_disc_profile == FORCED_AUDIO_CD) ? 3 : 2;
 	}
 	else {
 		maxSettingPos = MAX_NGC_OPTIONS - 1;
@@ -1755,15 +1970,19 @@ static void get_settings(int disc_type) {
 			DrawSelectableButton(vmode->fbWidth - 220, 160 + (32 * 2), -1, 160 + (32 * 2) + 30, getChunkSizeOption(), (currentSettingPos == 1) ? B_SELECTED : B_NOSELECT, -1);
 			WriteFont(80, 160 + (32 * 3), "New device per chunk");
 			DrawSelectableButton(vmode->fbWidth - 220, 160 + (32 * 3), -1, 160 + (32 * 3) + 30, getNewFileOption(), (currentSettingPos == 2) ? B_SELECTED : B_NOSELECT, -1);
+			WriteFont(80, 160 + (32 * 4), "Auto Eject");
+			DrawSelectableButton(vmode->fbWidth - 220, 160 + (32 * 4), -1, 160 + (32 * 4) + 30, getAutoEjectOption(), (currentSettingPos == 3) ? B_SELECTED : B_NOSELECT, -1);
 		}
 		else if (disc_type == IS_OTHER_DISC) {
 			WriteFont(80, 160 + (32 * 1), "Chunk Size");
 			DrawSelectableButton(vmode->fbWidth - 220, 160 + (32 * 1), -1, 160 + (32 * 1) + 30, getChunkSizeOption(), (!currentSettingPos) ? B_SELECTED : B_NOSELECT, -1);
 			WriteFont(80, 160 + (32 * 2), "New device per chunk");
 			DrawSelectableButton(vmode->fbWidth - 220, 160 + (32 * 2), -1, 160 + (32 * 2) + 30, getNewFileOption(), (currentSettingPos == 1) ? B_SELECTED : B_NOSELECT, -1);
+			WriteFont(80, 160 + (32 * 3), "Auto Eject");
+			DrawSelectableButton(vmode->fbWidth - 220, 160 + (32 * 3), -1, 160 + (32 * 3) + 30, getAutoEjectOption(), (currentSettingPos == 2) ? B_SELECTED : B_NOSELECT, -1);
 			if (forced_disc_profile == FORCED_AUDIO_CD) {
-				WriteFont(80, 160 + (32 * 3), "Audio Output");
-				DrawSelectableButton(vmode->fbWidth - 220, 160 + (32 * 3), -1, 160 + (32 * 3) + 30, getAudioOutputOption(), (currentSettingPos == 2) ? B_SELECTED : B_NOSELECT, -1);
+				WriteFont(80, 160 + (32 * 4), "Audio Output");
+				DrawSelectableButton(vmode->fbWidth - 220, 160 + (32 * 4), -1, 160 + (32 * 4) + 30, getAudioOutputOption(), (currentSettingPos == 3) ? B_SELECTED : B_NOSELECT, -1);
 			}
 		}
 		WriteCentre(370,"Press  A  to continue");
@@ -1775,14 +1994,22 @@ static void get_settings(int disc_type) {
 		if(btns & PAD_BUTTON_RIGHT) {
 			int optionPos = optionBase + currentSettingPos;
 			if (disc_type == IS_OTHER_DISC) {
-				optionPos = (currentSettingPos == 0) ? WII_CHUNK_SIZE : (currentSettingPos == 1 ? WII_NEWFILE : AUDIO_OUTPUT);
+				if (forced_disc_profile == FORCED_AUDIO_CD) {
+					optionPos = (currentSettingPos == 0) ? WII_CHUNK_SIZE : (currentSettingPos == 1 ? WII_NEWFILE : (currentSettingPos == 2 ? AUTO_EJECT : AUDIO_OUTPUT));
+				} else {
+					optionPos = (currentSettingPos == 0) ? WII_CHUNK_SIZE : (currentSettingPos == 1 ? WII_NEWFILE : AUTO_EJECT);
+				}
 			}
 			toggleOption(optionPos, 1);
 		}
 		if(btns & PAD_BUTTON_LEFT) {
 			int optionPos = optionBase + currentSettingPos;
 			if (disc_type == IS_OTHER_DISC) {
-				optionPos = (currentSettingPos == 0) ? WII_CHUNK_SIZE : (currentSettingPos == 1 ? WII_NEWFILE : AUDIO_OUTPUT);
+				if (forced_disc_profile == FORCED_AUDIO_CD) {
+					optionPos = (currentSettingPos == 0) ? WII_CHUNK_SIZE : (currentSettingPos == 1 ? WII_NEWFILE : (currentSettingPos == 2 ? AUTO_EJECT : AUDIO_OUTPUT));
+				} else {
+					optionPos = (currentSettingPos == 0) ? WII_CHUNK_SIZE : (currentSettingPos == 1 ? WII_NEWFILE : AUTO_EJECT);
+				}
 			}
 			toggleOption(optionPos, -1);
 		}
@@ -1986,13 +2213,20 @@ void dump_audio_cue(const char *audioFileName, int isWave) {
 		return;
 	}
 
+	if (cdtext_album_artist[0]) {
+		fprintf(fp, "PERFORMER \"%s\"\r\n", cdtext_album_artist);
+	}
+	if (cdtext_album_title[0]) {
+		fprintf(fp, "TITLE \"%s\"\r\n", cdtext_album_title);
+	}
+
 	fprintf(fp, "FILE \"%s\" %s\r\n", audioFileName, isWave ? "WAVE" : "BINARY");
 
     int toc_read = 0;
-    if (hSourceDrive != INVALID_HANDLE_VALUE) {
+    if (numSourceDrives > 0 && hSourceDrives[0] != INVALID_HANDLE_VALUE) {
         CDROM_TOC_LOCAL toc;
         DWORD bytesReturned;
-        if (DeviceIoControl(hSourceDrive, IOCTL_CDROM_READ_TOC_LOCAL, NULL, 0, &toc, sizeof(toc), &bytesReturned, NULL)) {
+        if (DeviceIoControl(hSourceDrives[0], IOCTL_CDROM_READ_TOC_LOCAL, NULL, 0, &toc, sizeof(toc), &bytesReturned, NULL)) {
             printf("TOC read successfully. Tracks: %d-%d\n", toc.FirstTrack, toc.LastTrack);
             toc_read = 1;
             for (int i = toc.FirstTrack; i <= toc.LastTrack; i++) {
@@ -2018,6 +2252,9 @@ void dump_audio_cue(const char *audioFileName, int isWave) {
                 f = frames % 75;
                 
                 fprintf(fp, "  TRACK %02d AUDIO\r\n", tr->TrackNumber);
+                if (cdtext_track_titles[tr->TrackNumber - 1][0]) {
+                    fprintf(fp, "    TITLE \"%s\"\r\n", cdtext_track_titles[tr->TrackNumber - 1]);
+                }
                 fprintf(fp, "    INDEX 01 %02d:%02d:%02d\r\n", m, s, f);
                 printf("Track %02d Start: %02d:%02d:%02d\n", tr->TrackNumber, m, s, f);
             }
@@ -2159,6 +2396,7 @@ static int select_wav_channels() {
 
 static int select_rip_passes() {
     int passes = 1;
+    const int max_passes = 32;
     while ((get_buttons_pressed() & PAD_BUTTON_A));
     while (1) {
         DrawFrameStart();
@@ -2176,7 +2414,10 @@ static int select_rip_passes() {
         while (!(get_buttons_pressed() & (PAD_BUTTON_RIGHT | PAD_BUTTON_LEFT | PAD_BUTTON_A)));
         u32 btns = get_buttons_pressed();
         
-        if (btns & PAD_BUTTON_RIGHT) passes++;
+        if (btns & PAD_BUTTON_RIGHT) {
+            passes++;
+            if (passes > max_passes) passes = max_passes;
+        }
         if (btns & PAD_BUTTON_LEFT) {
             passes--;
             if (passes < 1) passes = 1;
@@ -2297,7 +2538,7 @@ int dump_game(int disc_type, int fs) {
 	// There will be chunks, name accordingly
 	FILE *fp = NULL;
 	const char *output_ext = get_output_extension(disc_type);
-	int should_eject = (disc_type == IS_NGC_DISC || disc_type == IS_WII_DISC || disc_type == IS_DATEL_DISC);
+	int should_eject = options_map[AUTO_EJECT] == EJECT_YES;
 	FILE *badfp = NULL;
 	const int audio_max_attempts = (audio_mode == AUDIO_OUT_WAV_FAST) ? 3 : (audio_mode == AUDIO_OUT_WAV_BEST ? 10 : 6);
 	const int audio_sector_recovery = (audio_mode == AUDIO_OUT_WAV || audio_mode == AUDIO_OUT_WAV_BEST);
@@ -2617,12 +2858,16 @@ int dump_game(int disc_type, int fs) {
 
 			sprintf(txtbuffer, "%s%s%s", mountPath, gameName, output_ext);
 			FILE *out = fopen(txtbuffer, "wb");
-			FILE *ins[10];
+			FILE **ins = malloc(sizeof(FILE*) * num_passes);
 			int all_files_open = 1;
-			for (int i = 0; i < num_passes; i++) {
-				sprintf(txtbuffer, "%s%s.pass%d.tmp", mountPath, gameName, i);
-				ins[i] = fopen(txtbuffer, "rb");
-				if (!ins[i]) all_files_open = 0;
+			if (!ins) {
+				all_files_open = 0;
+			} else {
+				for (int i = 0; i < num_passes; i++) {
+					sprintf(txtbuffer, "%s%s.pass%d.tmp", mountPath, gameName, i);
+					ins[i] = fopen(txtbuffer, "rb");
+					if (!ins[i]) all_files_open = 0;
+				}
 			}
 
 			if (out && all_files_open) {
@@ -2631,10 +2876,21 @@ int dump_game(int disc_type, int fs) {
 
 				u32 chunk_size = 65536; // 64KB chunk
 				u8 *merge_buf = malloc(chunk_size * num_passes);
-				u8 *read_bufs[10];
-				for (int i = 0; i < num_passes; i++) read_bufs[i] = malloc(chunk_size);
+				u8 **read_bufs = malloc(sizeof(u8*) * num_passes);
+				int mem_ok = (merge_buf && read_bufs);
+				if (mem_ok) {
+					memset(read_bufs, 0, sizeof(u8*) * num_passes);
+					for (int i = 0; i < num_passes; i++) {
+						read_bufs[i] = malloc(chunk_size);
+						if (!read_bufs[i]) {
+							mem_ok = 0;
+							break;
+						}
+					}
+				}
 
-				while (1) {
+				if (mem_ok) {
+					while (1) {
 					size_t read_len = fread(read_bufs[0], 1, chunk_size, ins[0]);
 					if (read_len == 0) {
 						break;
@@ -2658,18 +2914,27 @@ int dump_game(int disc_type, int fs) {
 						}
 					}
 					fwrite(merge_buf, 1, read_len * num_passes, out);
+					}
 				}
 
-				free(merge_buf);
-				for (int i = 0; i < num_passes; i++) free(read_bufs[i]);
+				if (merge_buf) free(merge_buf);
+				if (read_bufs) {
+					for (int i = 0; i < num_passes; i++) {
+						if(read_bufs[i]) free(read_bufs[i]);
+					}
+					free(read_bufs);
+				}
 				fclose(out);
 			} else if (out) {
 				fclose(out);
 			}
-			for (int i = 0; i < num_passes; i++) {
-				if (ins[i]) fclose(ins[i]);
-				sprintf(txtbuffer, "%s%s.pass%d.tmp", mountPath, gameName, i);
-				remove(txtbuffer);
+			if (ins) {
+				for (int i = 0; i < num_passes; i++) {
+					if (ins[i]) fclose(ins[i]);
+					sprintf(txtbuffer, "%s%s.pass%d.tmp", mountPath, gameName, i);
+					remove(txtbuffer);
+				}
+				free(ins);
 			}
 		}
 	}
