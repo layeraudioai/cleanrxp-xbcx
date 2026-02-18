@@ -690,7 +690,7 @@ static u32 get_forced_disc_end_sectors() {
 
 static const char *get_output_extension(int disc_type) {
 	if (disc_type == IS_OTHER_DISC && forced_disc_profile == FORCED_AUDIO_CD) {
-		return (options_map[AUDIO_OUTPUT] == AUDIO_OUT_WAV || options_map[AUDIO_OUTPUT] == AUDIO_OUT_WAV_FAST) ? ".wav" : ".bin";
+		return (options_map[AUDIO_OUTPUT] == AUDIO_OUT_WAV || options_map[AUDIO_OUTPUT] == AUDIO_OUT_WAV_FAST || options_map[AUDIO_OUTPUT] == AUDIO_OUT_WAV_BEST) ? ".wav" : ".bin";
 	}
 	return ".iso";
 }
@@ -2129,7 +2129,7 @@ int dump_game(int disc_type, int fs) {
 
 	int is_audio_profile = (disc_type == IS_OTHER_DISC && forced_disc_profile == FORCED_AUDIO_CD);
 	if (is_audio_profile && forced_audio_sector_size == 0) {
-		forced_audio_sector_size = audio_mode == AUDIO_OUT_BIN ? 2048 : 2352;
+		forced_audio_sector_size = 2352;
 	}
 	u32 sector_size = (disc_type == IS_OTHER_DISC) ? get_forced_disc_sector_size() : 2048;
 	u32 target_read_size = READ_SIZE;
