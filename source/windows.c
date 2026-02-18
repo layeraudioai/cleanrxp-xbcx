@@ -715,7 +715,20 @@ static void sanitize_game_name() {
 
 static u32 detect_audio_cd_size_sectors(u32 sector_size) {
 	(void)sector_size;
-	// Keep Audio CD mode stable: avoid probe reads that can upset some drives.
+
+    if (hSourceDrive != INVALID_HANDLE_VALUE) {
+        CDROM_TOC_LOCAL toc;
+        DWORD bytesReturned;
+        if (DeviceIoControl(hSourceDrive, IOCTL_CDROM_READ_TOC_LOCAL, NULL, 0, &toc, sizeof(toc), &bytesReturned, NULL)) {
+            int leadOutIndex = toc.LastTrack - toc.FirstTrack + 1;
+            if (leadOutIndex < MAXIMUM_NUMBER_TRACKS_LOCAL) {
+                TRACK_DATA_LOCAL *tr = &toc.TrackData[leadOutIndex];
+                u32 frames = (tr->Address[1] * 60 + tr->Address[2]) * 75 + tr->Address[3];
+                if (frames >= 150) return frames - 150;
+                return frames;
+            }
+        }
+    }
 	return 360000;
 }
 
@@ -1927,22 +1940,32 @@ static void write_le32(FILE *fp, u32 value) {
 	fputc((int)((value >> 24) & 0xFF), fp);
 }
 
-void write_wav_header(FILE *fp, u32 data_size) {
+static void write_le16(FILE *fp, u16 value) {
+	fputc((int)(value & 0xFF), fp);
+	fputc((int)((value >> 8) & 0xFF), fp);
+}
+
+void write_wav_header(FILE *fp, u32 data_size, int channels) {
 	if (!fp) {
 		return;
 	}
+    // Calculate sample rate to ensure same playback time (duration)
+    // Original: 44100Hz * 2ch * 2bytes = 176400 bytes/sec
+    // New: Rate * channels * 2bytes = 176400 => Rate = 88200 / channels
+    int sample_rate = 88200 / channels;
+
 	// 44-byte PCM RIFF header, 16-bit stereo 44.1kHz
 	fwrite("RIFF", 1, 4, fp);
 	write_le32(fp, data_size + 36);
 	fwrite("WAVE", 1, 4, fp);
 	fwrite("fmt ", 1, 4, fp);
 	write_le32(fp, 16);          // PCM fmt chunk size
-	fputc(1, fp); fputc(0, fp);  // AudioFormat = PCM
-	fputc(2, fp); fputc(0, fp);  // NumChannels = 2
-	write_le32(fp, 44100);       // SampleRate
-	write_le32(fp, 176400);      // ByteRate = 44100*2*2
-	fputc(4, fp); fputc(0, fp);  // BlockAlign = 4
-	fputc(16, fp); fputc(0, fp); // BitsPerSample = 16
+	write_le16(fp, 1);           // AudioFormat = PCM
+	write_le16(fp, channels);    // NumChannels
+	write_le32(fp, sample_rate);       // SampleRate
+	write_le32(fp, sample_rate * channels * 2);      // ByteRate
+	write_le16(fp, channels * 2);  // BlockAlign
+	write_le16(fp, 16);          // BitsPerSample = 16
 	fwrite("data", 1, 4, fp);
 	write_le32(fp, data_size);
 }
@@ -1952,10 +1975,10 @@ void dump_audio_cue(const char *audioFileName, int isWave) {
 		return;
 	}
 
-	sprintf(txtbuffer, "%s%s.cue", &mountPath[0], &gameName[0]);
+	sprintf(txtbuffer, "%s%s.cue", mountPath, gameName);
 	printf("\n*** Attempting to write CUE to %s ***\n", txtbuffer);
     fflush(stdout);
-	remove(&txtbuffer[0]);
+	remove(txtbuffer);
 	FILE *fp = fopen(txtbuffer, "wb");
 	if (!fp) {
 		printf("Error opening CUE file: %s\n", strerror(errno));
@@ -1996,9 +2019,10 @@ void dump_audio_cue(const char *audioFileName, int isWave) {
                 
                 fprintf(fp, "  TRACK %02d AUDIO\r\n", tr->TrackNumber);
                 fprintf(fp, "    INDEX 01 %02d:%02d:%02d\r\n", m, s, f);
+                printf("Track %02d Start: %02d:%02d:%02d\n", tr->TrackNumber, m, s, f);
             }
         } else {
-            printf("DeviceIoControl TOC failed: %lu\n", GetLastError());
+            printf("DeviceIoControl TOC failed: %u\n", (unsigned int)GetLastError());
         }
     }
 
@@ -2008,9 +2032,12 @@ void dump_audio_cue(const char *audioFileName, int isWave) {
         fprintf(fp, "    INDEX 01 00:00:00\r\n");
     }
 
+    fflush(fp);
 	fclose(fp);
+    printf("CUE file closed.\n");
     printf("*** CUE file created successfully ***\n");
 }
+
 
 void dump_info(char *md5, char *sha1, u32 crc32, int verified, u32 seconds, char* name) {
 	if(selected_device == TYPE_READONLY) {
@@ -2100,6 +2127,36 @@ char *getDiscTypeStr(int disc_type, bool isDualLayer) {
 #define MSG_COUNT 8
 #define THREAD_PRIO 128
 
+static int select_wav_channels() {
+    int channels = 2;
+    while ((get_buttons_pressed() & PAD_BUTTON_A));
+    while (1) {
+        DrawFrameStart();
+        DrawEmptyBox(30, 180, vmode->fbWidth - 38, 350, COLOR_BLACK);
+        WriteCentre(255, "Select Audio Channels");
+        
+        char buf[32];
+        sprintf(buf, "< %d >", channels);
+        DrawSelectableButton(280, 310, -1, 340, buf, B_SELECTED, -1);
+        WriteCentre(360, "Left/Right to change, A to confirm");
+        
+        DrawFrameFinish();
+        
+        while (!(get_buttons_pressed() & (PAD_BUTTON_RIGHT | PAD_BUTTON_LEFT | PAD_BUTTON_A)));
+        u32 btns = get_buttons_pressed();
+        
+        if (btns & PAD_BUTTON_RIGHT) channels++;
+        if (btns & PAD_BUTTON_LEFT) {
+            channels--;
+            if (channels < 1) channels = 1;
+        }
+        if (btns & PAD_BUTTON_A) break;
+        while ((get_buttons_pressed() & (PAD_BUTTON_RIGHT | PAD_BUTTON_LEFT | PAD_BUTTON_A)));
+    }
+    while ((get_buttons_pressed() & PAD_BUTTON_A));
+    return channels;
+}
+
 int dump_game(int disc_type, int fs) {
 
 	isDumping = 1;
@@ -2128,6 +2185,8 @@ int dump_game(int disc_type, int fs) {
 	int audio_mode = options_map[AUDIO_OUTPUT];
 
 	int is_audio_profile = (disc_type == IS_OTHER_DISC && forced_disc_profile == FORCED_AUDIO_CD);
+    printf("Debug: dump_game start. is_audio_profile=%d, disc_type=%d, forced_disc_profile=%d\n", is_audio_profile, disc_type, forced_disc_profile);
+    fflush(stdout);
 	if (is_audio_profile && forced_audio_sector_size == 0) {
 		forced_audio_sector_size = 2352;
 	}
@@ -2211,6 +2270,12 @@ int dump_game(int disc_type, int fs) {
 	FILE *badfp = NULL;
 	const int audio_max_attempts = (audio_mode == AUDIO_OUT_WAV_FAST) ? 3 : (audio_mode == AUDIO_OUT_WAV_BEST ? 10 : 6);
 	const int audio_sector_recovery = (audio_mode == AUDIO_OUT_WAV || audio_mode == AUDIO_OUT_WAV_BEST);
+    
+    int wav_channels = 2;
+    if (is_audio_profile && strcmp(output_ext, ".wav") == 0) {
+        wav_channels = select_wav_channels();
+    }
+
 	if(selected_device != TYPE_READONLY) {
 		if (opt_chunk_size < total_bytes) {
 			sprintf(txtbuffer, "%s%s.part0%s", &mountPath[0], &gameName[0], output_ext);
@@ -2230,7 +2295,14 @@ int dump_game(int disc_type, int fs) {
 			exit(0);
 		}
 		if (is_audio_profile && strcmp(output_ext, ".wav") == 0) {
-			write_wav_header(fp, 0);
+			write_wav_header(fp, 0, wav_channels);
+		}
+		if (is_audio_profile) {
+			printf("Debug: Calling dump_audio_cue at start\n"); fflush(stdout);
+			char cueFileName[64];
+			int cueIsWave = (strcmp(output_ext, ".wav") == 0);
+			sprintf(cueFileName, "%s%s", &gameName[0], output_ext);
+			dump_audio_cue(cueFileName, cueIsWave);
 		}
 		msg.command = MSG_SETFILE;
 		msg.data = fp;
@@ -2466,7 +2538,7 @@ int dump_game(int disc_type, int fs) {
 		if (fp && is_audio_profile && strcmp(output_ext, ".wav") == 0) {
 			u32 wav_data_size = (u32)((u64)startLBA * sector_size);
 			fseek(fp, 0, SEEK_SET);
-			write_wav_header(fp, wav_data_size);
+			write_wav_header(fp, wav_data_size, wav_channels);
 		}
 		fclose(fp);
 		if (badfp) {
@@ -2610,14 +2682,10 @@ int dump_game(int disc_type, int fs) {
 		if(!calcChecksums) {
 			dump_info(NULL, NULL, crc32, verified, diff_sec(startTime, gettime()), NULL);
 		}
+        printf("Debug: Checking audio profile. is_audio_profile=%d, disc_type=%d, forced_disc_profile=%d\n", is_audio_profile, disc_type, forced_disc_profile);
+        fflush(stdout);
 		if (is_audio_profile && selected_device != TYPE_READONLY) {
-            printf("Debug: Calling dump_audio_cue\n"); fflush(stdout);
-			char cueFileName[64];
-			int cueIsWave = (strcmp(output_ext, ".wav") == 0);
-			sprintf(cueFileName, "%s%s", &gameName[0], output_ext);
-			dump_audio_cue(&cueFileName[0], cueIsWave);
-            sprintf(txtbuffer, "CUE Location: %s%s.cue", mountPath, gameName);
-            WriteCentre(360, txtbuffer);
+			// CUE file is now generated at the start of the rip
 		}
 		if ((disc_type == IS_DATEL_DISC) && !(verified)) {
 			dump_skips(&mountPath[0], crc100000);
@@ -2779,6 +2847,5 @@ int main(int argc, char **argv) {
 		WriteCentre(255, "Dump another disc?");
 		wait_press_A_exit_B(false);
 	}
-
-	return 0;
+    return 0;
 }
