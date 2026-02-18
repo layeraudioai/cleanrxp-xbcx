@@ -2176,25 +2176,54 @@ static void write_le16(FILE *fp, u16 value) {
 	fputc((int)((value >> 8) & 0xFF), fp);
 }
 
-void write_wav_header(FILE *fp, u32 data_size, int channels, int sample_rate) {
+static void write_le64(FILE *fp, u64 value) {
+	write_le32(fp, (u32)(value & 0xFFFFFFFF));
+	write_le32(fp, (u32)(value >> 32));
+}
+
+void write_wav_header(FILE *fp, u64 data_size, int channels, int sample_rate) {
 	if (!fp) {
 		return;
 	}
 
-	// 44-byte PCM RIFF header, 16-bit stereo 44.1kHz
-	fwrite("RIFF", 1, 4, fp);
-	write_le32(fp, data_size + 36);
-	fwrite("WAVE", 1, 4, fp);
-	fwrite("fmt ", 1, 4, fp);
-	write_le32(fp, 16);          // PCM fmt chunk size
-	write_le16(fp, 1);           // AudioFormat = PCM
-	write_le16(fp, channels);    // NumChannels
-	write_le32(fp, sample_rate);       // SampleRate
-	write_le32(fp, sample_rate * channels * 2);      // ByteRate
-	write_le16(fp, channels * 2);  // BlockAlign
-	write_le16(fp, 16);          // BitsPerSample = 16
-	fwrite("data", 1, 4, fp);
-	write_le32(fp, data_size);
+	if (data_size >= 0xFFFFFFFF) {
+		// RF64 header for files > 4GB
+		fwrite("RF64", 1, 4, fp);
+		write_le32(fp, 0xFFFFFFFF);
+		fwrite("WAVE", 1, 4, fp);
+		fwrite("ds64", 1, 4, fp);
+		write_le32(fp, 28); // ds64 chunk size
+		write_le64(fp, data_size + 72); // RIFF Size (approx overhead)
+		write_le64(fp, data_size);      // Data Size
+		write_le64(fp, data_size / (channels * 2)); // Sample Count
+		write_le32(fp, 0); // Table length
+
+		fwrite("fmt ", 1, 4, fp);
+		write_le32(fp, 16);
+		write_le16(fp, 1);
+		write_le16(fp, channels);
+		write_le32(fp, sample_rate);
+		write_le32(fp, sample_rate * channels * 2);
+		write_le16(fp, channels * 2);
+		write_le16(fp, 16);
+		fwrite("data", 1, 4, fp);
+		write_le32(fp, 0xFFFFFFFF);
+	} else {
+		// Standard WAV header
+		fwrite("RIFF", 1, 4, fp);
+		write_le32(fp, (u32)data_size + 36);
+		fwrite("WAVE", 1, 4, fp);
+		fwrite("fmt ", 1, 4, fp);
+		write_le32(fp, 16);          // PCM fmt chunk size
+		write_le16(fp, 1);           // AudioFormat = PCM
+		write_le16(fp, channels);    // NumChannels
+		write_le32(fp, sample_rate);       // SampleRate
+		write_le32(fp, sample_rate * channels * 2);      // ByteRate
+		write_le16(fp, channels * 2);  // BlockAlign
+		write_le16(fp, 16);          // BitsPerSample = 16
+		fwrite("data", 1, 4, fp);
+		write_le32(fp, (u32)data_size);
+	}
 }
 
 void dump_audio_cue(const char *audioFileName, int isWave) {
@@ -2840,7 +2869,7 @@ int dump_game(int disc_type, int fs) {
 	LWP_JoinThread(writer, NULL);
 	if(selected_device != TYPE_READONLY) {
 		if (fp && is_audio_profile && strcmp(output_ext, ".wav") == 0 && num_passes == 1) {
-			u32 wav_data_size = (u32)((u128)startLBA * sector_size);
+			u64 wav_data_size = (u64)((u128)startLBA * sector_size);
 			fseek(fp, 0, SEEK_SET);
 			write_wav_header(fp, wav_data_size, wav_channels, sample_rate);
 		}
@@ -2871,7 +2900,7 @@ int dump_game(int disc_type, int fs) {
 			}
 
 			if (out && all_files_open) {
-				u32 total_data_size = (u32)((u128)endLBA * sector_size * num_passes);
+				u64 total_data_size = (u64)((u128)endLBA * sector_size * num_passes);
 				write_wav_header(out, total_data_size, wav_channels, sample_rate);
 
 				u32 chunk_size = 65536; // 64KB chunk
