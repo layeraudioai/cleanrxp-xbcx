@@ -2618,12 +2618,14 @@ int dump_game(int disc_type, int fs) {
 			sprintf(txtbuffer, "%s%s%s", mountPath, gameName, output_ext);
 			FILE *out = fopen(txtbuffer, "wb");
 			FILE *ins[10];
+			int all_files_open = 1;
 			for (int i = 0; i < num_passes; i++) {
 				sprintf(txtbuffer, "%s%s.pass%d.tmp", mountPath, gameName, i);
 				ins[i] = fopen(txtbuffer, "rb");
+				if (!ins[i]) all_files_open = 0;
 			}
 
-			if (out) {
+			if (out && all_files_open) {
 				u32 total_data_size = (u32)((u128)endLBA * sector_size * num_passes);
 				write_wav_header(out, total_data_size, wav_channels, sample_rate);
 
@@ -2633,11 +2635,21 @@ int dump_game(int disc_type, int fs) {
 				for (int i = 0; i < num_passes; i++) read_bufs[i] = malloc(chunk_size);
 
 				while (1) {
-					size_t read_len = 0;
-					for (int i = 0; i < num_passes; i++) {
-						if (ins[i]) read_len = fread(read_bufs[i], 1, chunk_size, ins[i]);
+					size_t read_len = fread(read_bufs[0], 1, chunk_size, ins[0]);
+					if (read_len == 0) {
+						break;
 					}
-					if (read_len == 0) break;
+
+					int ok = 1;
+					for (int i = 1; i < num_passes; i++) {
+						if (fread(read_bufs[i], 1, read_len, ins[i]) != read_len) {
+							ok = 0;
+							break;
+						}
+					}
+					if (!ok) {
+						break;
+					}
 
 					// Interleave: 4 bytes (16-bit stereo frame) from each pass
 					for (size_t j = 0; j < read_len / 4; j++) {
@@ -2650,6 +2662,8 @@ int dump_game(int disc_type, int fs) {
 
 				free(merge_buf);
 				for (int i = 0; i < num_passes; i++) free(read_bufs[i]);
+				fclose(out);
+			} else if (out) {
 				fclose(out);
 			}
 			for (int i = 0; i < num_passes; i++) {
