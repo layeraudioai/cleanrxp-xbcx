@@ -1945,14 +1945,10 @@ static void write_le16(FILE *fp, u16 value) {
 	fputc((int)((value >> 8) & 0xFF), fp);
 }
 
-void write_wav_header(FILE *fp, u32 data_size, int channels) {
+void write_wav_header(FILE *fp, u32 data_size, int channels, int sample_rate) {
 	if (!fp) {
 		return;
 	}
-    // Calculate sample rate to ensure same playback time (duration)
-    // Original: 44100Hz * 2ch * 2bytes = 176400 bytes/sec
-    // New: Rate * channels * 2bytes = 176400 => Rate = 88200 / channels
-    int sample_rate = 88200 / channels;
 
 	// 44-byte PCM RIFF header, 16-bit stereo 44.1kHz
 	fwrite("RIFF", 1, 4, fp);
@@ -2157,6 +2153,37 @@ static int select_wav_channels() {
     return channels;
 }
 
+static int select_rip_passes() {
+    int passes = 1;
+    while ((get_buttons_pressed() & PAD_BUTTON_A));
+    while (1) {
+        DrawFrameStart();
+        DrawEmptyBox(30, 180, vmode->fbWidth - 38, 350, COLOR_BLACK);
+        WriteCentre(255, "Select Number of Rips (Passes)");
+        
+        char buf[32];
+        sprintf(buf, "< %d >", passes);
+        DrawSelectableButton(280, 310, -1, 340, buf, B_SELECTED, -1);
+        WriteCentre(360, "Left/Right to change, A to confirm");
+        WriteCentre(380, "More passes = Higher Quality/Sample Rate");
+        
+        DrawFrameFinish();
+        
+        while (!(get_buttons_pressed() & (PAD_BUTTON_RIGHT | PAD_BUTTON_LEFT | PAD_BUTTON_A)));
+        u32 btns = get_buttons_pressed();
+        
+        if (btns & PAD_BUTTON_RIGHT) passes++;
+        if (btns & PAD_BUTTON_LEFT) {
+            passes--;
+            if (passes < 1) passes = 1;
+        }
+        if (btns & PAD_BUTTON_A) break;
+        while ((get_buttons_pressed() & (PAD_BUTTON_RIGHT | PAD_BUTTON_LEFT | PAD_BUTTON_A)));
+    }
+    while ((get_buttons_pressed() & PAD_BUTTON_A));
+    return passes;
+}
+
 int dump_game(int disc_type, int fs) {
 
 	isDumping = 1;
@@ -2272,8 +2299,12 @@ int dump_game(int disc_type, int fs) {
 	const int audio_sector_recovery = (audio_mode == AUDIO_OUT_WAV || audio_mode == AUDIO_OUT_WAV_BEST);
     
     int wav_channels = 2;
+    int num_passes = 1;
+    int sample_rate = 44100;
     if (is_audio_profile && strcmp(output_ext, ".wav") == 0) {
         wav_channels = select_wav_channels();
+        num_passes = select_rip_passes();
+        sample_rate = (88200 * num_passes) / wav_channels;
     }
 
 	if(selected_device != TYPE_READONLY) {
@@ -2282,8 +2313,15 @@ int dump_game(int disc_type, int fs) {
 		} else {
 			sprintf(txtbuffer, "%s%s%s", &mountPath[0], &gameName[0], output_ext);
 		}
-		remove(&txtbuffer[0]);
-		fp = fopen(&txtbuffer[0], "wb");
+        
+        if (num_passes > 1) {
+            // For multi-pass, we write to temp files first
+            sprintf(txtbuffer, "%s%s.pass0.tmp", mountPath, gameName);
+        }
+        
+		remove(txtbuffer);
+		fp = fopen(txtbuffer, "wb");
+        
 		if (fp == NULL) {
 			DrawFrameStart();
 			DrawEmptyBox(30, 180, vmode->fbWidth - 38, 350, COLOR_BLACK);
@@ -2294,8 +2332,8 @@ int dump_game(int disc_type, int fs) {
 			sleep(5);
 			exit(0);
 		}
-		if (is_audio_profile && strcmp(output_ext, ".wav") == 0) {
-			write_wav_header(fp, 0, wav_channels);
+		if (is_audio_profile && strcmp(output_ext, ".wav") == 0 && num_passes == 1) {
+			write_wav_header(fp, 0, wav_channels, sample_rate);
 		}
 		if (is_audio_profile) {
 			printf("Debug: Calling dump_audio_cue at start\n"); fflush(stdout);
@@ -2329,6 +2367,26 @@ int dump_game(int disc_type, int fs) {
 	int chunk = 1;
 	int isKnownDatel = 0;
 	char *discTypeStr = getDiscTypeStr(disc_type, endLBA == WII_D9_SIZE);
+
+    for (int pass = 0; pass < num_passes; pass++) {
+        if (pass > 0) {
+            // Reset for next pass
+            startLBA = 0;
+            lastLBA = 0;
+            if (selected_device != TYPE_READONLY) {
+                sprintf(txtbuffer, "%s%s.pass%d.tmp", mountPath, gameName, pass);
+                remove(txtbuffer);
+                fp = fopen(txtbuffer, "wb");
+                if (!fp) {
+                    printf("Error opening temp file for pass %d\n", pass);
+                    ret = -1;
+                    break;
+                }
+                msg.command = MSG_SETFILE;
+                msg.data = fp;
+                MQ_Send(msgq, (mqmsg_t)&msg, MQ_MSG_BLOCK);
+            }
+        }
 
 	while (!ret && (startLBA < endLBA)) {
 		MQ_Receive(blockq, (mqmsg_t*)&wmsg, MQ_MSG_BLOCK);
@@ -2524,6 +2582,7 @@ int dump_game(int disc_type, int fs) {
 		}
 		startLBA += cur_read_sectors;
 	}
+	}
 	if(calcChecksums) {
 		md5_finish(&state, digest);
 	}
@@ -2535,14 +2594,65 @@ int dump_game(int disc_type, int fs) {
 	MQ_Send(msgq, (mqmsg_t)NULL, MQ_MSG_BLOCK);
 	LWP_JoinThread(writer, NULL);
 	if(selected_device != TYPE_READONLY) {
-		if (fp && is_audio_profile && strcmp(output_ext, ".wav") == 0) {
+		if (fp && is_audio_profile && strcmp(output_ext, ".wav") == 0 && num_passes == 1) {
 			u32 wav_data_size = (u32)((u64)startLBA * sector_size);
 			fseek(fp, 0, SEEK_SET);
-			write_wav_header(fp, wav_data_size, wav_channels);
+			write_wav_header(fp, wav_data_size, wav_channels, sample_rate);
 		}
 		fclose(fp);
 		if (badfp) {
 			fclose(badfp);
+		}
+
+		if (num_passes > 1 && !ret) {
+			// Merge passes
+			DrawFrameStart();
+			DrawEmptyBox(30, 180, vmode->fbWidth - 38, 350, COLOR_BLACK);
+			WriteCentre(255, "Merging passes...");
+			DrawFrameFinish();
+
+			sprintf(txtbuffer, "%s%s%s", mountPath, gameName, output_ext);
+			FILE *out = fopen(txtbuffer, "wb");
+			FILE *ins[10];
+			for (int i = 0; i < num_passes; i++) {
+				sprintf(txtbuffer, "%s%s.pass%d.tmp", mountPath, gameName, i);
+				ins[i] = fopen(txtbuffer, "rb");
+			}
+
+			if (out) {
+				u32 total_data_size = (u32)((u64)endLBA * sector_size * num_passes);
+				write_wav_header(out, total_data_size, wav_channels, sample_rate);
+
+				u32 chunk_size = 65536; // 64KB chunk
+				u8 *merge_buf = malloc(chunk_size * num_passes);
+				u8 *read_bufs[10];
+				for (int i = 0; i < num_passes; i++) read_bufs[i] = malloc(chunk_size);
+
+				while (1) {
+					size_t read_len = 0;
+					for (int i = 0; i < num_passes; i++) {
+						if (ins[i]) read_len = fread(read_bufs[i], 1, chunk_size, ins[i]);
+					}
+					if (read_len == 0) break;
+
+					// Interleave: 4 bytes (16-bit stereo frame) from each pass
+					for (size_t j = 0; j < read_len / 4; j++) {
+						for (int i = 0; i < num_passes; i++) {
+							memcpy(merge_buf + (j * num_passes + i) * 4, read_bufs[i] + j * 4, 4);
+						}
+					}
+					fwrite(merge_buf, 1, read_len * num_passes, out);
+				}
+
+				free(merge_buf);
+				for (int i = 0; i < num_passes; i++) free(read_bufs[i]);
+				fclose(out);
+			}
+			for (int i = 0; i < num_passes; i++) {
+				if (ins[i]) fclose(ins[i]);
+				sprintf(txtbuffer, "%s%s.pass%d.tmp", mountPath, gameName, i);
+				remove(txtbuffer);
+			}
 		}
 	}
 
