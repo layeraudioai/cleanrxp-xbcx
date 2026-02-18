@@ -51,6 +51,8 @@ typedef int8_t s8;
 typedef int16_t s16;
 typedef int32_t s32;
 typedef int64_t s64;
+typedef __uint128_t u128;
+typedef __int128_t s128;
 typedef float f32;
 typedef volatile u32 vu32;
 typedef u32 sec_t;
@@ -132,6 +134,8 @@ static HANDLE hSourceDrive = INVALID_HANDLE_VALUE;
 #include <ogc/message.h>
 #include <fat.h>
 #include <ntfs.h>
+typedef __uint128_t u128;
+typedef __int128_t s128;
 #endif
 #include <time.h>
 #include <stdbool.h>
@@ -143,9 +147,9 @@ static HANDLE hSourceDrive = INVALID_HANDLE_VALUE;
 #include <sdcard/wiisd_io.h>
 #endif
 
-u64 gettime();
-u32 diff_msec(u64 start, u64 end);
-u32 diff_sec(u64 start, u64 end);
+u128 gettime();
+u32 diff_msec(u128 start, u128 end);
+u32 diff_sec(u128 start, u128 end);
 
 #define V_MAJOR 2
 #define V_MID 5
@@ -430,7 +434,7 @@ int init_dvd(bool prompt) {
 }
 const char* dvd_error_str() { return "No Error"; }
 u32 dvd_get_error() { return 0; }
-int DVD_LowRead64(void *buf, u32 len, u64 offset) {
+int DVD_LowRead64(void *buf, u32 len, u128 offset) {
     if (hSourceDrive == INVALID_HANDLE_VALUE) return -1;
 
     // Try IOCTL for Audio CD (2352 byte sectors)
@@ -443,7 +447,7 @@ int DVD_LowRead64(void *buf, u32 len, u64 offset) {
 
             RAW_READ_INFO_LOCAL rawReadInfo;
             // Windows expects 2048-byte sector addressing for DiskOffset
-            rawReadInfo.DiskOffset.QuadPart = ((offset + done) / 2352) * 2048;
+            rawReadInfo.DiskOffset.QuadPart = ((s64)((offset + done) / 2352)) * 2048;
             rawReadInfo.SectorCount = chunk / 2352;
             rawReadInfo.TrackMode = CDDA_Local;
 
@@ -460,13 +464,13 @@ int DVD_LowRead64(void *buf, u32 len, u64 offset) {
     }
 
     LARGE_INTEGER li;
-    li.QuadPart = offset;
+    li.QuadPart = (s64)offset;
     if (SetFilePointer(hSourceDrive, li.LowPart, &li.HighPart, FILE_BEGIN) == INVALID_SET_FILE_POINTER && GetLastError() != NO_ERROR) return -1;
     DWORD bytesRead;
     if (!ReadFile(hSourceDrive, buf, len, &bytesRead, NULL) || bytesRead != len) return -1;
     return 0;
 }
-int DVD_LowRead64Datel(void *buf, u32 len, u64 offset, int isKnown) { return 0; }
+int DVD_LowRead64Datel(void *buf, u32 len, u128 offset, int isKnown) { return 0; }
 void dvd_motor_off(int eject) {}
 void dvd_read_bca(void *buf) {}
 
@@ -631,15 +635,15 @@ void DCZeroRange(void* addr, u32 len) {}
 void DCFlushRange(void* addr, u32 len) {}
 #endif
 
-u64 gettime() {
+u128 gettime() {
 	struct timespec ts;
 	clock_gettime(CLOCK_MONOTONIC, &ts);
-	return (u64)ts.tv_sec * 1000000000ULL + ts.tv_nsec;
+	return (u128)ts.tv_sec * 1000000000ULL + ts.tv_nsec;
 }
-u32 diff_msec(u64 start, u64 end) {
+u32 diff_msec(u128 start, u128 end) {
 	return (u32)((end - start) / 1000000ULL);
 }
-u32 diff_sec(u64 start, u64 end) {
+u32 diff_sec(u128 start, u128 end) {
 	return (u32)((end - start) / 1000000000ULL);
 }
 
@@ -1161,7 +1165,7 @@ static int initialise_source() {
 	return initialise_dvd();
 }
 
-static int source_read(void* dst, u32 len, u64 offset, int disc_type, int isKnownDatel) {
+static int source_read(void* dst, u32 len, u128 offset, int disc_type, int isKnownDatel) {
 	if (selected_source == SRC_USB_DRIVE) {
 		if ((offset & 0x1FF) || (len & 0x1FF)) {
 			return 1;
@@ -1178,7 +1182,7 @@ static int initialise_source() {
 	return initialise_dvd();
 }
 
-static int source_read(void* dst, u32 len, u64 offset, int disc_type, int isKnownDatel) {
+static int source_read(void* dst, u32 len, u128 offset, int disc_type, int isKnownDatel) {
 	if (disc_type == IS_DATEL_DISC) {
 		return DVD_LowRead64Datel(dst, len, offset, isKnownDatel);
 	}
@@ -1512,11 +1516,11 @@ static int force_disc() {
 int detect_duallayer_disc() {
 	char *readBuf = (char*)memalign(32,64);
 	int ret = WII_D1_SIZE;
-	uint64_t offset = (uint64_t)WII_D1_SIZE << 11;
+	u128 offset = (u128)WII_D1_SIZE << 11;
 	if (source_read(readBuf, 64, offset, IS_WII_DISC, 0) == 0) {
 		ret = WII_D5_SIZE;
 	}
-	offset = (uint64_t)WII_D5_SIZE << 11;//offsetToSecondLayer
+	offset = (u128)WII_D5_SIZE << 11;//offsetToSecondLayer
 	if (source_read(readBuf, 64, offset, IS_WII_DISC, 0) == 0) {
 		ret = WII_D9_SIZE;
 	}
@@ -2228,7 +2232,7 @@ int dump_game(int disc_type, int fs) {
 		read_sectors = 1;
 	}
 	u32 max_read_size = read_sectors * sector_size;
-	u64 one_gigabyte_bytes = (u64)ONE_GIGABYTE * 2048;
+	u128 one_gigabyte_bytes = (u128)ONE_GIGABYTE * 2048;
 
 	u32 startLBA = 0;
 	u32 endLBA = (disc_type == IS_NGC_DISC || disc_type == IS_DATEL_DISC) ? NGC_DISC_SIZE
@@ -2240,17 +2244,17 @@ int dump_game(int disc_type, int fs) {
 	if (disc_type == IS_OTHER_DISC && forced_disc_profile == FORCED_AUDIO_CD) {
 		endLBA = detect_audio_cd_size_sectors(sector_size);
 	}
-	u64 total_bytes = (u64)endLBA * sector_size;
+	u128 total_bytes = (u128)endLBA * sector_size;
 
 	// Work out the chunk size
 	u32 chunk_size_wii = options_map[WII_CHUNK_SIZE];
-	u64 opt_chunk_size;
+	u128 opt_chunk_size;
 	if (chunk_size_wii == CHUNK_MAX) {
 		// use 4GB chunks max for FAT drives
 		if (selected_device != TYPE_READONLY && fs == TYPE_FAT) {
 			long file_size_bits = pathconf("fat:/", _PC_FILESIZEBITS);
 			if (file_size_bits <= 33) {
-			opt_chunk_size = (4ULL * one_gigabyte_bytes) - max_read_size - 1;
+			opt_chunk_size = ((u128)4 * one_gigabyte_bytes) - max_read_size - 1;
 		} else {
 			opt_chunk_size = total_bytes + max_read_size;
 		}
@@ -2258,12 +2262,12 @@ int dump_game(int disc_type, int fs) {
 			opt_chunk_size = total_bytes + max_read_size;
 		}
 	} else {
-		opt_chunk_size = (u64)(chunk_size_wii + 1) * one_gigabyte_bytes;
+		opt_chunk_size = (u128)(chunk_size_wii + 1) * one_gigabyte_bytes;
 	}
 
 	if (disc_type == IS_NGC_DISC || disc_type == IS_DATEL_DISC
 		|| (disc_type == IS_WII_DISC && options_map[WII_DUAL_LAYER] == SINGLE_MINI)) {
-		opt_chunk_size = (u64)NGC_DISC_SIZE * 2048;
+		opt_chunk_size = (u128)NGC_DISC_SIZE * 2048;
 	}
 	if (is_audio_profile) {
 		// Keep audio dumps as a single BIN so a single CUE can reference it.
@@ -2362,8 +2366,8 @@ int dump_game(int disc_type, int fs) {
 	u32 audio_sectors_total = 0;
 	u32 audio_sectors_failed = 0;
 	u32 lastLBA = 0;
-	u64 lastCheckedTime = gettime();
-	u64 startTime = gettime();
+	u128 lastCheckedTime = gettime();
+	u128 startTime = gettime();
 	int chunk = 1;
 	int isKnownDatel = 0;
 	char *discTypeStr = getDiscTypeStr(disc_type, endLBA == WII_D9_SIZE);
@@ -2403,7 +2407,7 @@ int dump_game(int disc_type, int fs) {
 				exit(1);
 			}
 
-			if (((u64)startLBA * sector_size) > (opt_chunk_size * chunk)) {
+			if (((u128)startLBA * sector_size) > (opt_chunk_size * chunk)) {
 				// wait for writing to finish
 				vu32 sema = 0;
 				msg.command = MSG_FLUSH;
@@ -2413,7 +2417,7 @@ int dump_game(int disc_type, int fs) {
 					LWP_YieldThread();
 
 				// open new file
-				u64 wait_begin = gettime();
+				u128 wait_begin = gettime();
 				if (badfp && silent == ASK_USER) {
 					fclose(badfp);
 					badfp = NULL;
@@ -2451,7 +2455,7 @@ int dump_game(int disc_type, int fs) {
 			// Audio CD mode: retry several times before zero-filling.
 			ret = 1;
 			for (int attempt = 0; attempt < audio_max_attempts; attempt++) {
-				ret = source_read(wmsg->data, (u32)opt_read_size, (u64)startLBA * sector_size, disc_type, isKnownDatel);
+				ret = source_read(wmsg->data, (u32)opt_read_size, (u128)startLBA * sector_size, disc_type, isKnownDatel);
 				if (ret == 0) {
 					break;
 				}
@@ -2459,7 +2463,7 @@ int dump_game(int disc_type, int fs) {
 			}
 		}
 		else
-			ret = source_read(wmsg->data, (u32)opt_read_size, (u64)startLBA * sector_size, disc_type, isKnownDatel);
+			ret = source_read(wmsg->data, (u32)opt_read_size, (u128)startLBA * sector_size, disc_type, isKnownDatel);
 		if (ret != 0) {
 			if (is_audio_profile) {
 				if (audio_sector_recovery && cur_read_sectors > 1) {
@@ -2468,7 +2472,7 @@ int dump_game(int disc_type, int fs) {
 					for (u32 s = 0; s < cur_read_sectors; s++) {
 						int sec_ret = 1;
 						for (int a = 0; a < audio_max_attempts; a++) {
-							sec_ret = source_read(((u8*)wmsg->data) + (s * sector_size), sector_size, ((u64)startLBA + s) * sector_size, disc_type, isKnownDatel);
+							sec_ret = source_read(((u8*)wmsg->data) + (s * sector_size), sector_size, ((u128)startLBA + s) * sector_size, disc_type, isKnownDatel);
 							if (sec_ret == 0) {
 								break;
 							}
@@ -2525,7 +2529,7 @@ int dump_game(int disc_type, int fs) {
 		// Always calculate CRC32
 		crc32 = Crc32_ComputeBuf( crc32, wmsg+1, (u32) opt_read_size);
 
-		if(disc_type == IS_DATEL_DISC && (((u64)startLBA * sector_size) + opt_read_size == 0x100000)){
+		if(disc_type == IS_DATEL_DISC && (((u128)startLBA * sector_size) + opt_read_size == 0x100000)){
 			crc100000 = crc32;
 			isKnownDatel = datel_findCrcSum(crc100000);
 			DrawFrameStart();
@@ -2535,7 +2539,7 @@ int dump_game(int disc_type, int fs) {
 			}
 			sprintf(txtbuffer, "%s CRC100000=%08X", (isKnownDatel ? "Known":"Unknown"), crc100000);
 			WriteCentre(255, txtbuffer);
-			u64 waitTimeStart = gettime();
+			u128 waitTimeStart = gettime();
 			wait_press_A_exit_B(false);
 			startTime += (gettime() - waitTimeStart);	// Don't throw time off because we'd paused here
 		}
@@ -2551,13 +2555,13 @@ int dump_game(int disc_type, int fs) {
 			newProgressDisplay ^= 1;
 		}
 		// Update status every second
-		u64 curTime = gettime();
+		u128 curTime = gettime();
 		s32 timePassed = diff_msec(lastCheckedTime, curTime);
 		if (timePassed >= 1000) {
-			u64 current_bytes = (u64)startLBA * sector_size;
-			u64 last_bytes = (u64)lastLBA * sector_size;
+			u128 current_bytes = (u128)startLBA * sector_size;
+			u128 last_bytes = (u128)lastLBA * sector_size;
 			u32 bytes_since_last_read = (u32)((current_bytes - last_bytes) * (1000.0f/timePassed));
-			u64 remainder = (((u64)endLBA - startLBA) * sector_size) - opt_read_size;
+			u128 remainder = (((u128)endLBA - startLBA) * sector_size) - opt_read_size;
 			u32 etaTime = bytes_since_last_read ? (remainder / bytes_since_last_read) : 0;
 			DrawFrameStart();
 			if(newProgressDisplay) {
@@ -2566,12 +2570,12 @@ int dump_game(int disc_type, int fs) {
 					(int)((etaTime/3600)%60),(int)((etaTime/60)%60),(int)(etaTime%60));
 					
 					DrawProgressDetailed((int)((float)((float)startLBA/(float)endLBA)*100), txtbuffer, 
-						(int) ((((u64)startLBA * sector_size) / (1024*1024))),
-						(int) ((((u64)endLBA * sector_size) / (1024*1024))), discTypeStr, calcChecksums, disc_type);
+						(int) ((((u128)startLBA * sector_size) / (1024*1024))),
+						(int) ((((u128)endLBA * sector_size) / (1024*1024))), discTypeStr, calcChecksums, disc_type);
 			}
 			else {
 				sprintf(txtbuffer, "%dMB %4.2fKB/s - ETA %02d:%02d:%02d",
-					(int) ((((u64)startLBA * sector_size) / (1024*1024))),
+					(int) ((((u128)startLBA * sector_size) / (1024*1024))),
 					(float)bytes_since_last_read/1024.0f,
 					(int)((etaTime/3600)%60),(int)((etaTime/60)%60),(int)(etaTime%60));
 				DrawProgressBar((int)((float)((float)startLBA/(float)endLBA)*100), txtbuffer, disc_type);
@@ -2595,7 +2599,7 @@ int dump_game(int disc_type, int fs) {
 	LWP_JoinThread(writer, NULL);
 	if(selected_device != TYPE_READONLY) {
 		if (fp && is_audio_profile && strcmp(output_ext, ".wav") == 0 && num_passes == 1) {
-			u32 wav_data_size = (u32)((u64)startLBA * sector_size);
+			u32 wav_data_size = (u32)((u128)startLBA * sector_size);
 			fseek(fp, 0, SEEK_SET);
 			write_wav_header(fp, wav_data_size, wav_channels, sample_rate);
 		}
@@ -2620,7 +2624,7 @@ int dump_game(int disc_type, int fs) {
 			}
 
 			if (out) {
-				u32 total_data_size = (u32)((u64)endLBA * sector_size * num_passes);
+				u32 total_data_size = (u32)((u128)endLBA * sector_size * num_passes);
 				write_wav_header(out, total_data_size, wav_channels, sample_rate);
 
 				u32 chunk_size = 65536; // 64KB chunk
@@ -2688,8 +2692,8 @@ int dump_game(int disc_type, int fs) {
 	else {
 		DrawFrameStart();
 		DrawProgressDetailed((int)((float)((float)startLBA/(float)endLBA)*100), "Finished", 
-						(int) ((((u64)startLBA * sector_size) / (1024*1024))),
-						(int) ((((u64)endLBA * sector_size) / (1024*1024))), discTypeStr, calcChecksums, disc_type);
+						(int) ((((u128)startLBA * sector_size) / (1024*1024))),
+						(int) ((((u128)endLBA * sector_size) / (1024*1024))), discTypeStr, calcChecksums, disc_type);
 		DrawEmptyBox (30,180, vmode->fbWidth-38, 350, COLOR_BLACK);
 		sprintf(txtbuffer,"Copy completed in %u mins. Press A",diff_sec(startTime, gettime())/60);
 		WriteCentre(190,txtbuffer);

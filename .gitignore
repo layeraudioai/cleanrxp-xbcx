@@ -3,5 +3,8 @@ cleanrip.elf
 cleanrip.dol
 cleanrip-gc.dol
 cleanrip-gc.elf
-cleanrxp.exe
-.gitignore
+cleanrxp-xbcx.exe
+.vscode/targets.log
+.vscode/settings.json
+.vscode/dryrun.log
+.vscode/configurationCache.log

@@ -40,8 +40,7 @@ u32 dvd_get_error(void);
 char *dvd_error_str();
 int dvd_read_id();
 void dvd_read_bca(void* dst);
-int DVD_LowRead64(void* dst, u32 len, uint64_t offset);
-int DVD_LowRead64Datel(void* dst, u32 len, uint64_t offset, int isKnownDatel);
+int DVD_LowRead64(void* dst, u32 len, __uint128_t offset);
+int DVD_LowRead64Datel(void* dst, u32 len, __uint128_t offset, int isKnownDatel);
 void xeno_disable();
 #endif
-
