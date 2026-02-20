@@ -411,11 +411,11 @@ typedef struct _CDROM_TOC_CD_TEXT_DATA_LOCAL {
 // PackType values
 #define CDROM_CD_TEXT_TYPE_TITLE        0x80
 #define CDROM_CD_TEXT_TYPE_PERFORMER    0x81
-
-static char cdtext_album_artist[256] = {0};
-static char cdtext_album_title[256] = {0};
-static char cdtext_track_titles[MAXIMUM_NUMBER_TRACKS_LOCAL][256] = {{0}};
-static char cdtext_track_artists[MAXIMUM_NUMBER_TRACKS_LOCAL][256] = {{0}};
+#define CDROM_CD_TEXT_MAX_CHARS         2048
+static char cdtext_album_artist[CDROM_CD_TEXT_MAX_CHARS] = {0};
+static char cdtext_album_title[CDROM_CD_TEXT_MAX_CHARS] = {0};
+static char cdtext_track_titles[MAXIMUM_NUMBER_TRACKS_LOCAL][CDROM_CD_TEXT_MAX_CHARS] = {{0}};
+static char cdtext_track_artists[MAXIMUM_NUMBER_TRACKS_LOCAL][CDROM_CD_TEXT_MAX_CHARS] = {{0}};
 
 static void read_cd_text() {
     if (numSourceDrives == 0 || hSourceDrives[0] == INVALID_HANDLE_VALUE) return;
@@ -438,7 +438,18 @@ static void read_cd_text() {
     if (!textData) return;
 
     DWORD bytesReturned;
-    if (DeviceIoControl(hSourceDrives[0], IOCTL_CDROM_READ_TOC_EX_LOCAL, &tocEx, sizeof(tocEx), textData, dataSize, &bytesReturned, NULL)) {
+    int retries = 10;
+    int success = 0;
+    while (retries > 0) {
+        if (DeviceIoControl(hSourceDrives[0], IOCTL_CDROM_READ_TOC_EX_LOCAL, &tocEx, sizeof(tocEx), textData, dataSize, &bytesReturned, NULL)) {
+            success = 1;
+            break;
+        }
+        usleep(100000);
+        retries--;
+    }
+
+    if (success) {
         // Length in header does not include the 2-byte Length field itself.
         int totalLength = (textData->Length[0] << 8) | textData->Length[1];
         int numDescriptors = (totalLength - 2) / sizeof(CDROM_CD_TEXT_PACKET_LOCAL);
@@ -448,40 +459,32 @@ static void read_cd_text() {
             // Only process Block 0 (English/Roman) for now to avoid mixing languages
             if (packet->BlockNumber != 0) continue;
 
-            char* target_buffer = NULL;
             int track_num = packet->TrackNumber;
+            for (int j = 0; j < 12; j++) {
+                char c = packet->Text[j];
+                char* target_buffer = NULL;
 
-            switch (packet->PackType) {
-                case CDROM_CD_TEXT_TYPE_TITLE:
+                if (packet->PackType == CDROM_CD_TEXT_TYPE_TITLE) {
                     if (track_num == 0) target_buffer = cdtext_album_title;
-                    else if (track_num > 0 && track_num <= MAXIMUM_NUMBER_TRACKS_LOCAL) {
-                        target_buffer = cdtext_track_titles[track_num - 1];
-                    }
-                    break;
-                case CDROM_CD_TEXT_TYPE_PERFORMER:
+                    else if (track_num <= MAXIMUM_NUMBER_TRACKS_LOCAL) target_buffer = cdtext_track_titles[track_num - 1];
+                } else if (packet->PackType == CDROM_CD_TEXT_TYPE_PERFORMER) {
                     if (track_num == 0) target_buffer = cdtext_album_artist;
-                    else if (track_num > 0 && track_num <= MAXIMUM_NUMBER_TRACKS_LOCAL) {
-                        target_buffer = cdtext_track_artists[track_num - 1];
-                    }
-                    break;
-            }
+                    else if (track_num <= MAXIMUM_NUMBER_TRACKS_LOCAL) target_buffer = cdtext_track_artists[track_num - 1];
+                }
 
-            if (target_buffer) {
-                // Append text to buffer. Packs are usually sequential.
-                int current_len = strlen(target_buffer);
-                if (current_len < 255) {
-                    char temp[13];
-                    memcpy(temp, packet->Text, 12);
-                    temp[12] = 0; // Ensure null termination
-                    
-                    // Check if we have space
-                    if (current_len + strlen(temp) < 256) {
-                        strcat(target_buffer, temp);
+                if (target_buffer) {
+                    int len = strlen(target_buffer);
+                    if (len < CDROM_CD_TEXT_MAX_CHARS - 1) {
+                        if (c != '\0') {
+                            target_buffer[len] = c;
+                            target_buffer[len+1] = '\0';
+                        }
                     }
                 }
+                if (c == '\0') track_num++;
             }
-        }
-    }
+                        }
+                    }
     free(textData);
 }
 
@@ -610,7 +613,7 @@ int init_dvd(bool prompt) {
         
         char path[32];
         sprintf(path, "\\\\.\\%c:", selected_source_drive_letters[i]);
-        HANDLE h = CreateFile(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+        HANDLE h = CreateFile(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL);
         if (h != INVALID_HANDLE_VALUE) {
             DWORD bytesReturned;
             if (DeviceIoControl(h, IOCTL_STORAGE_CHECK_VERIFY, NULL, 0, NULL, 0, &bytesReturned, NULL)) {
