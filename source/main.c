@@ -1238,6 +1238,7 @@ void prompt_new_file(FILE **fp, int chunk, int fs, int silent, int disc_type) {
 }
 
 void dump_bca() {
+	printf("dumping bca to " + &mountPath[0] +  &gameName[0] + ".bca");
 	sprintf(txtbuffer, "%s%s.bca", &mountPath[0], &gameName[0]);
 	remove(&txtbuffer[0]);
 	FILE *fp = fopen(txtbuffer, "wb");
@@ -1469,11 +1470,7 @@ int dump_game(int disc_type, int fs) {
 	}
 
 	// Dump the BCA for Nintendo discs
-	if(selected_device != TYPE_READONLY && disc_type != IS_OTHER_DISC
-#ifdef HW_RVL
-		&& selected_source == SRC_INTERNAL_DISC
-#endif
-	) {
+	if(selected_device != TYPE_READONLY) {
 		dump_bca();
 	}
 
