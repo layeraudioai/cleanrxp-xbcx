@@ -228,6 +228,14 @@ enum {
 	MAX_OPTIONS
 };
 
+enum forcedDiscProfile {
+	FORCED_DISC_NONE = 0,
+	FORCED_DVD_VIDEO_SL,
+	FORCED_DVD_VIDEO_DL,
+	FORCED_MINI_DVD,
+	FORCED_AUDIO_CD
+};
+
 #define MAX_NGC_OPTIONS 4
 #define MAX_WII_OPTIONS 4
 
@@ -488,6 +496,95 @@ static void read_cd_text() {
     free(textData);
 }
 
+
+#define IOCTL_CDROM_READ_Q_CHANNEL      CTL_CODE(IOCTL_CDROM_BASE, 0x000B, METHOD_BUFFERED, FILE_READ_ACCESS)
+#define IOCTL_CDROM_MEDIA_CATALOG       0x02
+
+typedef struct _SUB_Q_HEADER {
+    UCHAR Reserved;
+    UCHAR AudioStatus;
+    UCHAR DataLength[2];
+} SUB_Q_HEADER, *PSUB_Q_HEADER;
+
+typedef struct _SUB_Q_MEDIA_CATALOG_NUMBER {
+    SUB_Q_HEADER Header;
+    UCHAR FormatCode;
+    UCHAR Reserved[3];
+    UCHAR Control; // McValid is bit 7
+    UCHAR MediaCatalog[15];
+} SUB_Q_MEDIA_CATALOG_NUMBER, *PSUB_Q_MEDIA_CATALOG_NUMBER;
+
+typedef struct _CDROM_SUB_Q_DATA_FORMAT {
+    UCHAR Format;
+    UCHAR Track;
+} CDROM_SUB_Q_DATA_FORMAT, *PCDROM_SUB_Q_DATA_FORMAT;
+
+#define IOCTL_CDROM_TRACK_ISRC          0x03
+
+typedef struct _SUB_Q_TRACK_ISRC {
+    SUB_Q_HEADER Header;
+    UCHAR FormatCode;
+    UCHAR Reserved0;
+    UCHAR Track;
+    UCHAR Reserved1;
+    UCHAR AbsoluteAddress[4];
+    UCHAR Control; // TcValid is bit 7
+    UCHAR TrackIsrc[15];
+} SUB_Q_TRACK_ISRC, *PSUB_Q_TRACK_ISRC;
+
+static char cd_mcn[16] = {0};
+static char cd_isrcs[MAXIMUM_NUMBER_TRACKS_LOCAL][16] = {{0}};
+
+static void read_cd_subchannel_info() {
+    if (numSourceDrives == 0 || hSourceDrives[0] == INVALID_HANDLE_VALUE) return;
+    
+    printf("Reading CD Subchannel Info...\n");
+    
+    DWORD bytesReturned;
+    CDROM_SUB_Q_DATA_FORMAT q_fmt;
+    
+    // Read MCN (Catalog number)
+    memset(cd_mcn, 0, sizeof(cd_mcn));
+    q_fmt.Format = IOCTL_CDROM_MEDIA_CATALOG;
+    q_fmt.Track = 0;
+    SUB_Q_MEDIA_CATALOG_NUMBER mcn_data;
+    memset(&mcn_data, 0, sizeof(mcn_data));
+    if (DeviceIoControl(hSourceDrives[0], IOCTL_CDROM_READ_Q_CHANNEL, &q_fmt, sizeof(q_fmt), &mcn_data, sizeof(mcn_data), &bytesReturned, NULL)) {
+        // McValid is bit 7 of the Control byte
+        if (mcn_data.FormatCode == 0x02 && (mcn_data.Control & 0x80)) {
+            memcpy(cd_mcn, mcn_data.MediaCatalog, 13);
+            printf("MCN Found: %s\n", cd_mcn);
+        } else {
+            printf("MCN not found or empty (FormatCode: %02X)\n", mcn_data.FormatCode);
+        }
+    } else {
+        printf("Failed to read MCN (Error %lu)\n", GetLastError());
+    }
+
+    // Read ISRCs for each track
+    memset(cd_isrcs, 0, sizeof(cd_isrcs));
+    CDROM_TOC_LOCAL toc;
+    if (DeviceIoControl(hSourceDrives[0], IOCTL_CDROM_READ_TOC_LOCAL, NULL, 0, &toc, sizeof(toc), &bytesReturned, NULL)) {
+        printf("Reading ISRCs for %d tracks...\n", toc.LastTrack - toc.FirstTrack + 1);
+        for (int i = toc.FirstTrack; i <= toc.LastTrack; i++) {
+            if ((i-1) >= MAXIMUM_NUMBER_TRACKS_LOCAL) break;
+            q_fmt.Format = IOCTL_CDROM_TRACK_ISRC;
+            q_fmt.Track = i;
+            SUB_Q_TRACK_ISRC isrc_data;
+            memset(&isrc_data, 0, sizeof(isrc_data));
+            if (DeviceIoControl(hSourceDrives[0], IOCTL_CDROM_READ_Q_CHANNEL, &q_fmt, sizeof(q_fmt), &isrc_data, sizeof(isrc_data), &bytesReturned, NULL)) {
+                // TcValid is bit 7 of the Control byte
+                if (isrc_data.FormatCode == 0x03 && (isrc_data.Control & 0x80)) {
+                    memcpy(cd_isrcs[i-1], isrc_data.TrackIsrc, 12);
+                }
+            } else {
+                printf("Failed to read ISRC for track %d (Error %lu)\n", i, GetLastError());
+            }
+        }
+    }
+    fflush(stdout);
+}
+
 void DrawFrameStart();
 void DrawFrameFinish();
 void DrawEmptyBox(int x, int y, int width, int height, u32 color);
@@ -708,36 +805,52 @@ void dvd_motor_off(int eject) {
         }
     }
 }
+
 void dvd_read_bca(void *buf) {
 #ifdef __CYGWIN__
+    printf("Attempting to read BCA/MCN...\n");
     if (numSourceDrives == 0 || hSourceDrives[0] == INVALID_HANDLE_VALUE) return;
+    memset(buf, 0, 64);
 
     DVD_READ_STRUCTURE_LOCAL read_struct;
     memset(&read_struct, 0, sizeof(read_struct));
     read_struct.Format = DvdBcaDescriptor_Local;
     read_struct.LayerNumber = 0;
 
-    // Output buffer: DVD_DESCRIPTOR_HEADER (4 bytes) + BCA data
-    UCHAR out_buf[4 + 64]; // We only need 64 bytes of BCA
+    // Output buffer: DVD_DESCRIPTOR_HEADER (4 bytes) + BCA data (up to 188 bytes)
+    UCHAR out_buf[4 + 256]; 
+    memset(out_buf, 0, sizeof(out_buf));
     DWORD bytes_returned;
+    BOOL bca_found = FALSE;
 
     if (DeviceIoControl(hSourceDrives[0], IOCTL_DVD_READ_STRUCTURE,
                         &read_struct, sizeof(read_struct),
                         out_buf, sizeof(out_buf),
                         &bytes_returned, NULL)) {
         if (bytes_returned >= 4) {
-            // DVD_DESCRIPTOR_HEADER: USHORT Length (big-endian), UCHAR Reserved[2]
-            USHORT data_length = (out_buf[0] << 8) | out_buf[1];
-            
-            // The data starts at an offset of 4 bytes from the beginning of the buffer.
-            // Data Length (in header) = 2 (Reserved) + BCA Data Size.
-            if (bytes_returned >= 4 && data_length > 2) {
-                int bca_len = data_length - 2;
-                int copy_len = bca_len > 64 ? 64 : bca_len;
-                memcpy(buf, out_buf + 4, copy_len);
+            USHORT data_len = (out_buf[0] << 8) | out_buf[1];
+            if (data_len >= 2) {
+                int bca_len = data_len - 2;
+                if (bca_len > 0) {
+                    if (bca_len > 64) bca_len = 64;
+                    memcpy(buf, out_buf + 4, bca_len);
+                    bca_found = TRUE;
+                    printf("Physical BCA found.\n");
+                }
             }
         }
     }
+
+    if (!bca_found) {
+        // For Audio CDs, use the MCN we (should have) read earlier.
+        if (forced_disc_profile == FORCED_AUDIO_CD && cd_mcn[0]) {
+            strncpy(buf, cd_mcn, 13);
+            printf("Using MCN as BCA.\n");
+        } else {
+            printf("No BCA or MCN found.\n");
+        }
+    }
+    fflush(stdout);
 #endif
 }
 
@@ -938,14 +1051,6 @@ int datel_findMD5Sum(char *md5) { return 0; }
 int datel_findCrcSum(u32 crc) { return 0; }
 char* datel_get_name(int type) { return "Unknown"; }
 void dump_skips(char *path, u32 crc) {}
-
-enum forcedDiscProfile {
-	FORCED_DISC_NONE = 0,
-	FORCED_DVD_VIDEO_SL,
-	FORCED_DVD_VIDEO_DL,
-	FORCED_MINI_DVD,
-	FORCED_AUDIO_CD
-};
 
 static u32 get_forced_disc_sector_size() {
 	if (forced_disc_profile == FORCED_AUDIO_CD) {
@@ -1743,6 +1848,7 @@ static int identify_disc() {
 
 	// It's not a GC/Wii disc, let's see if it's an audio CD with CD-TEXT
 	read_cd_text();
+	read_cd_subchannel_info();
 	if (cdtext_album_artist[0] || cdtext_album_title[0] || cdtext_track_titles[0][0]) {
 		if (cdtext_album_artist[0] && cdtext_album_title[0]) {
 			snprintf(gameName, sizeof(gameName), "%s - %s", cdtext_album_artist, cdtext_album_title);
@@ -2268,18 +2374,38 @@ void prompt_new_file(FILE **fp, int chunk, int fs, int silent, int disc_type) {
 
 void dump_bca() {
 	printf("dumping bca to %s%s.bca\n", &mountPath[0], &gameName[0]);
+    fflush(stdout);
+	char bca_data[64];
+	memset(bca_data, 0, sizeof(bca_data));
+	dvd_read_bca(bca_data);
+	memcpy(bca_data_for_display, bca_data, sizeof(bca_data));
+
+	int is_empty = 1;
+	for(int i=0; i<64; i++) if(bca_data[i]) is_empty = 0;
+	if(is_empty) printf("Warning: BCA data is all zeros.\n");
+
 	sprintf(txtbuffer, "%s%s.bca", &mountPath[0], &gameName[0]);
-	remove(&txtbuffer[0]);
 	FILE *fp = fopen(&txtbuffer[0], "wb");
 	if (fp) {
-		char bca_data[64] __attribute__((aligned(32)));
-		DCZeroRange(bca_data, 64);
-		DCFlushRange(bca_data, 64);
-		dvd_read_bca(bca_data);
-		memcpy(bca_data_for_display, bca_data, sizeof(bca_data));
 		fwrite(bca_data, 1, 0x40, fp);
 		fclose(fp);
+	} else {
+		printf("Error creating BCA file: %s (%s)\n", txtbuffer, strerror(errno));
 	}
+
+	sprintf(txtbuffer, "%s%s.bca.txt", &mountPath[0], &gameName[0]);
+	fp = fopen(txtbuffer, "w");
+	if (fp) {
+		for (int i = 0; i < 64; i++) {
+			for (int b = 7; b >= 0; b--) {
+				fputc((((unsigned char)bca_data[i]) >> b) & 1 ? '|' : '_', fp);
+			}
+		}
+		fclose(fp);
+	} else {
+		printf("Error creating BCA text file: %s (%s)\n", txtbuffer, strerror(errno));
+	}
+	fflush(stdout);
 }
 
 static void write_le32(FILE *fp, u32 value) {
@@ -2366,6 +2492,9 @@ void dump_audio_cue(const char *audioFileName, int isWave, const char *baseName)
 	if (cdtext_album_title[0]) {
 		fprintf(fp, "TITLE \"%s\"\r\n", cdtext_album_title);
 	}
+	if (cd_mcn[0]) {
+		fprintf(fp, "CATALOG %s\r\n", cd_mcn);
+	}
 
 	fprintf(fp, "FILE \"%s\" %s\r\n", audioFileName, isWave ? "WAVE" : "BINARY");
 
@@ -2404,6 +2533,9 @@ void dump_audio_cue(const char *audioFileName, int isWave, const char *baseName)
                 }
                 if (cdtext_track_artists[tr->TrackNumber - 1][0]) {
                     fprintf(fp, "    PERFORMER \"%s\"\r\n", cdtext_track_artists[tr->TrackNumber - 1]);
+                }
+                if (cd_isrcs[tr->TrackNumber - 1][0]) {
+                    fprintf(fp, "    ISRC %s\r\n", cd_isrcs[tr->TrackNumber - 1]);
                 }
                 fprintf(fp, "    INDEX 01 %02d:%02d:%02d\r\n", m, s, f);
                 printf("Track %02d Start: %02d:%02d:%02d\n", tr->TrackNumber, m, s, f);
@@ -2511,7 +2643,7 @@ char *getDiscTypeStr(int disc_type, bool isDualLayer) {
 	return "Unknown";
 }
 
-void display_toc_and_wait() {
+void display_cd_info_and_wait() {
     DrawFrameStart();
     DrawEmptyBox(30, 180, vmode->fbWidth - 38, 350, COLOR_BLACK);
     WriteCentre(190, "Audio CD Information");
@@ -2519,6 +2651,11 @@ void display_toc_and_wait() {
     if (cdtext_album_artist[0] || cdtext_album_title[0]) {
         sprintf(txtbuffer, "Album: %s - %s", cdtext_album_artist, cdtext_album_title);
         WriteCentre(220, txtbuffer);
+    }
+    if (cd_mcn[0]) {
+        sprintf(txtbuffer, "MCN/UPC: %s", cd_mcn);
+        WriteCentre(240, txtbuffer);
+        printf("MCN: %s\n", cd_mcn);
     }
 
     if (numSourceDrives > 0 && hSourceDrives[0] != INVALID_HANDLE_VALUE) {
@@ -2543,16 +2680,22 @@ void display_toc_and_wait() {
                     snprintf(track_title, sizeof(track_title), " - %s", cdtext_track_titles[tr->TrackNumber - 1]);
                 }
 
-                printf("  Track %02d: %02d:%02d:%02d %s%s\n", 
+                char isrc_str[32] = "";
+                if (cd_isrcs[tr->TrackNumber - 1][0]) {
+                    snprintf(isrc_str, sizeof(isrc_str), " ISRC: %s", cd_isrcs[tr->TrackNumber - 1]);
+                }
+
+                printf("  Track %02d: %02d:%02d:%02d %s%s%s\n", 
                     tr->TrackNumber, m, s, f, 
                     (tr->Control & 0x4) ? "(Data)" : "(Audio)",
-                    track_title);
+                    track_title, isrc_str);
             }
             printf("-------------------------\n");
         } else {
             printf("\nCould not read disc TOC.\n");
         }
     }
+    fflush(stdout);
     wait_press_A("to continue");
 }
 
@@ -2640,10 +2783,6 @@ int dump_game(int disc_type, int fs) {
 	int i;
 	const char *output_ext = get_output_extension(disc_type);
 
-	if(selected_device != TYPE_READONLY) {
-		dump_bca();
-	}
-
 	MQ_Init(&blockq, MSG_COUNT);
 	MQ_Init(&msgq, MSG_COUNT);
 
@@ -2666,6 +2805,11 @@ int dump_game(int disc_type, int fs) {
 		sprintf(final_audio_filename, "%s%s", base_name, output_ext);
 		int isWave = (strcmp(output_ext, ".wav") == 0);
 		dump_audio_cue(final_audio_filename, isWave, base_name);
+	}
+
+	// Dump the BCA (or MCN for Audio CDs)
+	if(selected_device != TYPE_READONLY) {
+		dump_bca();
 	}
 
 	if (is_audio_profile && forced_audio_sector_size == 0) {
@@ -3416,7 +3560,7 @@ int main(int argc, char **argv) {
 		}
 
 		if (disc_type == IS_OTHER_DISC && forced_disc_profile == FORCED_AUDIO_CD) {
-			display_toc_and_wait();
+			display_cd_info_and_wait();
 		}
 
 		if(reuseSettings == NOT_ASKED || reuseSettings == ANSWER_NO) {

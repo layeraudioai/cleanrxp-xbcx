@@ -1238,17 +1238,32 @@ void prompt_new_file(FILE **fp, int chunk, int fs, int silent, int disc_type) {
 }
 
 void dump_bca() {
-	printf("dumping bca to " + &mountPath[0] +  &gameName[0] + ".bca");
+	print_gecko("dumping bca to %s%s.bca\n", &mountPath[0], &gameName[0]);
+	char bca_data[64] __attribute__((aligned(32)));
+	memset(bca_data, 0, 64);
+	DCZeroRange(bca_data, 64);
+	DCFlushRange(bca_data, 64);
+	dvd_read_bca(bca_data);
+	memcpy(bca_data_for_display, bca_data, sizeof(bca_data));
+
 	sprintf(txtbuffer, "%s%s.bca", &mountPath[0], &gameName[0]);
-	remove(&txtbuffer[0]);
 	FILE *fp = fopen(txtbuffer, "wb");
 	if (fp) {
-		char bca_data[64] __attribute__((aligned(32)));
-		DCZeroRange(bca_data, 64);
-		DCFlushRange(bca_data, 64);
-		dvd_read_bca(bca_data);
 		fwrite(bca_data, 1, 0x40, fp);
 		fclose(fp);
+	}
+
+	sprintf(txtbuffer, "%s%s.bca.txt", &mountPath[0], &gameName[0]);
+	fp = fopen(txtbuffer, "w");
+	if (fp) {
+		for (int i = 0; i < 64; i++) {
+			for (int b = 7; b >= 0; b--) {
+				fputc((((unsigned char)bca_data[i]) >> b) & 1 ? '|' : '_', fp);
+			}
+		}
+		fclose(fp);
+	} else {
+		print_gecko("Error creating BCA text file: %s\n", txtbuffer);
 	}
 }
 
@@ -1469,7 +1484,7 @@ int dump_game(int disc_type, int fs) {
 		opt_chunk_size = total_bytes + max_read_size;
 	}
 
-	// Dump the BCA for Nintendo discs
+	// Dump the BCA
 	if(selected_device != TYPE_READONLY) {
 		dump_bca();
 	}
