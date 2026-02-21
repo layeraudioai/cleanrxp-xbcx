@@ -446,7 +446,7 @@ static void read_cd_text() {
     if (!textData) return;
 
     DWORD bytesReturned;
-    int retries = 10;
+    int retries = 66;
     int success = 0;
     while (retries > 0) {
         if (DeviceIoControl(hSourceDrives[0], IOCTL_CDROM_READ_TOC_EX_LOCAL, &tocEx, sizeof(tocEx), textData, dataSize, &bytesReturned, NULL)) {
@@ -806,19 +806,19 @@ void dvd_motor_off(int eject) {
     }
 }
 
-void dvd_read_bca(void *buf) {
+int dvd_read_bca(void *buf, int bufsize) {
 #ifdef __CYGWIN__
     printf("Attempting to read BCA/MCN...\n");
-    if (numSourceDrives == 0 || hSourceDrives[0] == INVALID_HANDLE_VALUE) return;
-    memset(buf, 0, 64);
+    if (numSourceDrives == 0 || hSourceDrives[0] == INVALID_HANDLE_VALUE) return 0;
+    memset(buf, 0, bufsize);
+    int data_written = 0;
 
     DVD_READ_STRUCTURE_LOCAL read_struct;
     memset(&read_struct, 0, sizeof(read_struct));
     read_struct.Format = DvdBcaDescriptor_Local;
     read_struct.LayerNumber = 0;
 
-    // Output buffer: DVD_DESCRIPTOR_HEADER (4 bytes) + BCA data (up to 188 bytes)
-    UCHAR out_buf[4 + 256]; 
+    UCHAR out_buf[4 + 256];
     memset(out_buf, 0, sizeof(out_buf));
     DWORD bytes_returned;
     BOOL bca_found = FALSE;
@@ -832,8 +832,9 @@ void dvd_read_bca(void *buf) {
             if (data_len >= 2) {
                 int bca_len = data_len - 2;
                 if (bca_len > 0) {
-                    if (bca_len > 64) bca_len = 64;
+                    if (bca_len > bufsize) bca_len = bufsize;
                     memcpy(buf, out_buf + 4, bca_len);
+                    data_written = bca_len;
                     bca_found = TRUE;
                     printf("Physical BCA found.\n");
                 }
@@ -842,16 +843,32 @@ void dvd_read_bca(void *buf) {
     }
 
     if (!bca_found) {
-        // For Audio CDs, use the MCN we (should have) read earlier.
-        if (forced_disc_profile == FORCED_AUDIO_CD && cd_mcn[0]) {
-            strncpy(buf, cd_mcn, 13);
-            printf("Using MCN as BCA.\n");
+        if (forced_disc_profile == FORCED_AUDIO_CD) {
+            char* p = (char*)buf;
+            int space_left = bufsize;
+            if (cd_mcn[0] && space_left >= 13) {
+                memcpy(p, cd_mcn, 13);
+                p += 13;
+                space_left -= 13;
+                data_written += 13;
+            }
+            for (int i = 0; i < MAXIMUM_NUMBER_TRACKS_LOCAL; i++) {
+                if (cd_isrcs[i][0] && space_left >= 12) {
+                    memcpy(p, cd_isrcs[i], 12);
+                    p += 12;
+                    space_left -= 12;
+                    data_written += 12;
+                }
+            }
+            printf("Using MCN and ISRCs as BCA data.\n");
         } else {
             printf("No BCA or MCN found.\n");
         }
     }
     fflush(stdout);
+    return data_written;
 #endif
+    return 0;
 }
 
 void DrawFrameStart() { printf("\033[2J\033[1;1H"); }
@@ -2371,23 +2388,28 @@ void prompt_new_file(FILE **fp, int chunk, int fs, int silent, int disc_type) {
 	}
 #endif
 }
-
+ 
+#define BCA_DUMP_SIZE 2048
 void dump_bca() {
 	printf("dumping bca to %s%s.bca\n", &mountPath[0], &gameName[0]);
     fflush(stdout);
-	char bca_data[64];
+	char bca_data[BCA_DUMP_SIZE];
 	memset(bca_data, 0, sizeof(bca_data));
-	dvd_read_bca(bca_data);
-	memcpy(bca_data_for_display, bca_data, sizeof(bca_data));
+	int bca_len = dvd_read_bca(bca_data, sizeof(bca_data));
+	memcpy(bca_data_for_display, bca_data, sizeof(bca_data_for_display));
 
-	int is_empty = 1;
-	for(int i=0; i<64; i++) if(bca_data[i]) is_empty = 0;
-	if(is_empty) printf("Warning: BCA data is all zeros.\n");
+	if (bca_len > 0) {
+		int is_empty = 1;
+		for(int i=0; i<bca_len; i++) if(bca_data[i]) { is_empty = 0; break; }
+		if(is_empty) printf("Warning: BCA data is all zeros.\n");
+	} else {
+		printf("Warning: BCA data is empty.\n");
+	}
 
 	sprintf(txtbuffer, "%s%s.bca", &mountPath[0], &gameName[0]);
 	FILE *fp = fopen(&txtbuffer[0], "wb");
 	if (fp) {
-		fwrite(bca_data, 1, 0x40, fp);
+		fwrite(bca_data, 1, bca_len, fp);
 		fclose(fp);
 	} else {
 		printf("Error creating BCA file: %s (%s)\n", txtbuffer, strerror(errno));
@@ -2396,7 +2418,7 @@ void dump_bca() {
 	sprintf(txtbuffer, "%s%s.bca.txt", &mountPath[0], &gameName[0]);
 	fp = fopen(txtbuffer, "w");
 	if (fp) {
-		for (int i = 0; i < 64; i++) {
+		for (int i = 0; i < bca_len; i++) {
 			for (int b = 7; b >= 0; b--) {
 				fputc((((unsigned char)bca_data[i]) >> b) & 1 ? '|' : '_', fp);
 			}
