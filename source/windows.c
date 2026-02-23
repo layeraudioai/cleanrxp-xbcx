@@ -527,7 +527,6 @@ typedef struct _SUB_Q_TRACK_ISRC {
     UCHAR Reserved0;
     UCHAR Track;
     UCHAR Reserved1;
-    UCHAR AbsoluteAddress[4];
     UCHAR Control; // TcValid is bit 7
     UCHAR TrackIsrc[15];
 } SUB_Q_TRACK_ISRC, *PSUB_Q_TRACK_ISRC;
@@ -2911,10 +2910,14 @@ int dump_game(int disc_type, int fs) {
     int wav_channels = 2;
     int num_passes = 1;
     int sample_rate = 44100;
-    if (is_audio_profile && strcmp(output_ext, ".wav") == 0) {
-        wav_channels = select_wav_channels();
+    if (is_audio_profile) {
+        if (strcmp(output_ext, ".wav") == 0) {
+            wav_channels = select_wav_channels();
+        }
         num_passes = select_rip_passes();
-        sample_rate = (88200 * num_passes) / wav_channels;
+        if (strcmp(output_ext, ".wav") == 0) {
+            sample_rate = (88200 * num_passes) / wav_channels;
+        }
     }
 
 	if(selected_device != TYPE_READONLY) {
@@ -3229,8 +3232,10 @@ int dump_game(int disc_type, int fs) {
 			}
 
 			if (out && all_files_open) {
-				u64 total_data_size = (u64)((u128)endLBA * sector_size * num_passes);
-				write_wav_header(out, total_data_size, wav_channels, sample_rate);
+				if (strcmp(output_ext, ".wav") == 0) {
+					u64 total_data_size = (u64)((u128)endLBA * sector_size * num_passes);
+					write_wav_header(out, total_data_size, wav_channels, sample_rate);
+				}
 
 				u32 chunk_size = 65536; // 64KB chunk
 				u8 *merge_buf = malloc(chunk_size * num_passes);
