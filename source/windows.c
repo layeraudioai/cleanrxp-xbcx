@@ -3268,13 +3268,16 @@ int dump_game(int disc_type, int fs) {
 						break;
 					}
 
-					// Interleave: 4 bytes (16-bit stereo frame) from each pass
-					for (size_t j = 0; j < read_len / 4; j++) {
+					// Interleave: frame by frame
+                    size_t frame_size = wav_channels * 2; // 2 bytes per sample (16-bit)
+					for (size_t j = 0; j < read_len / frame_size; j++) {
 						for (int i = 0; i < num_passes; i++) {
 							memcpy(merge_buf + (j * num_passes + i) * 4, read_bufs[i] + j * 4, 4);
+							memcpy(merge_buf + (j * num_passes + i) * frame_size, read_bufs[i] + j * frame_size, frame_size);
 						}
 					}
 					fwrite(merge_buf, 1, read_len * num_passes, out);
+
 					}
 				}
 
