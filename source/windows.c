@@ -2911,9 +2911,7 @@ int dump_game(int disc_type, int fs) {
     int num_passes = 1;
     int sample_rate = 44100;
     if (is_audio_profile) {
-        if (strcmp(output_ext, ".wav") == 0) {
-            wav_channels = select_wav_channels();
-        }
+        wav_channels = select_wav_channels();
         num_passes = select_rip_passes();
         if (strcmp(output_ext, ".wav") == 0) {
             sample_rate = (88200 * num_passes) / wav_channels;
